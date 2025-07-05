@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <glib.h>
 #include <sys/param.h>
+#include <openssl/crypto.h>
 
 #include "drivers_api.h"
 #include "fpi-byte-writer.h"
@@ -44,10 +45,11 @@ struct _FpiDeviceEgisMoc
   FpiUsbTransfer *cmd_transfer;
   GCancellable   *interrupt_cancellable;
   GPtrArray      *enrolled_ids;
+  guchar         *enrollment_nonce;
   gint            max_enroll_stages;
 };
 
-G_DEFINE_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FP_TYPE_DEVICE);
+G_DEFINE_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI_TYPE_SDCP_DEVICE);
 
 static const FpIdEntry egismoc_id_table[] = {
   { .vid = 0x1c7a, .pid = 0x0582, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 },
@@ -73,46 +75,6 @@ typedef struct egismoc_enroll_print
   FpPrint *print;
   int      stage;
 } EnrollPrint;
-
-static void
-egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
-                             FpDevice       *device,
-                             gpointer        userdata,
-                             GError         *error)
-{
-  fp_dbg ("Finger on sensor callback");
-  fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
-
-  g_return_if_fail (transfer->ssm);
-  if (error)
-    fpi_ssm_mark_failed (transfer->ssm, error);
-  else
-    fpi_ssm_next_state (transfer->ssm);
-}
-
-static void
-egismoc_wait_finger_on_sensor (FpiSsm   *ssm,
-                               FpDevice *device)
-{
-  fp_dbg ("Wait for finger on sensor");
-  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
-
-  g_autoptr(FpiUsbTransfer) transfer = fpi_usb_transfer_new (device);
-
-  fpi_usb_transfer_fill_interrupt (transfer, EGISMOC_EP_CMD_INTERRUPT_IN,
-                                   EGISMOC_USB_INTERRUPT_IN_RECV_LENGTH);
-  transfer->ssm = ssm;
-  /* Interrupt on this device always returns 1 byte short; this is expected */
-  transfer->short_is_error = FALSE;
-
-  fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
-
-  fpi_usb_transfer_submit (g_steal_pointer (&transfer),
-                           EGISMOC_USB_INTERRUPT_TIMEOUT,
-                           self->interrupt_cancellable,
-                           egismoc_finger_on_sensor_cb,
-                           NULL);
-}
 
 static gboolean
 egismoc_validate_response_prefix (const guchar *buffer_in,
@@ -380,29 +342,83 @@ egismoc_exec_cmd (FpDevice         *device,
 }
 
 static void
-egismoc_set_print_data (FpPrint     *print,
-                        const gchar *device_print_id,
-                        const gchar *user_id)
+egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
+                             FpDevice       *device,
+                             gpointer        userdata,
+                             GError         *error)
+{
+  fp_dbg ("Finger on sensor callback");
+  guint *attempts = userdata;
+
+  g_return_if_fail (transfer->ssm);
+  if (error)
+    fpi_ssm_mark_failed (transfer->ssm, error);
+
+  /* finger is "present" when buffer begins with "SIGE" and ends in valid suffix */
+  if (memcmp (transfer->buffer, egismoc_read_prefix, 4) == 0 &&
+      egismoc_validate_response_suffix (transfer->buffer,
+                                        transfer->actual_length,
+                                        rsp_sensor_has_finger_suffix,
+                                        rsp_sensor_has_finger_suffix_len))
+    {
+      fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
+      fpi_ssm_next_state (transfer->ssm);
+    }
+  else
+    {
+      if ((*attempts) > EGISMOC_SENSOR_ON_FINGER_READ_ATTEMPTS)
+        fpi_ssm_mark_failed (transfer->ssm,
+                             fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_NOT_FOUND,
+                                                       "Finger could not be detected "
+                                                       "on sensor."));
+      else
+        (*attempts)++;
+    }
+}
+
+static void
+egismoc_wait_finger_on_sensor (FpiSsm   *ssm,
+                               FpDevice *device)
+{
+  fp_dbg ("Wait for finger on sensor");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  g_autofree guint *attempts = 0;
+
+  g_autoptr(FpiUsbTransfer) transfer = fpi_usb_transfer_new (device);
+
+  fpi_usb_transfer_fill_interrupt (transfer, EGISMOC_EP_CMD_INTERRUPT_IN,
+                                   EGISMOC_USB_INTERRUPT_IN_RECV_LENGTH);
+  transfer->ssm = ssm;
+  /* Interrupt on this device always returns 1 byte short; this is expected */
+  transfer->short_is_error = FALSE;
+
+  fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+
+  fpi_usb_transfer_submit (g_steal_pointer (&transfer),
+                           EGISMOC_USB_INTERRUPT_TIMEOUT,
+                           self->interrupt_cancellable,
+                           egismoc_finger_on_sensor_cb,
+                           attempts);
+}
+
+static void
+egismoc_set_print_data (FpPrint      *print,
+                        const guchar *device_print_id,
+                        const gchar  *user_id)
 {
   GVariant *print_id_var = NULL;
   GVariant *fpi_data = NULL;
-  g_autofree gchar *fill_user_id = NULL;
 
-  if (user_id)
-    fill_user_id = g_strdup (user_id);
-  else
-    fill_user_id = g_strndup (device_print_id, EGISMOC_FINGERPRINT_DATA_SIZE);
-
-  fpi_print_fill_from_user_id (print, fill_user_id);
+  fpi_print_fill_from_user_id (print, user_id);
 
   fpi_print_set_type (print, FPI_PRINT_RAW);
   fpi_print_set_device_stored (print, TRUE);
 
-  g_object_set (print, "description", fill_user_id, NULL);
+  g_object_set (print, "description", user_id, NULL);
 
   print_id_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                             device_print_id,
-                                            EGISMOC_FINGERPRINT_DATA_SIZE,
+                                            FP_SDCP_ENROLLMENT_ID_SIZE,
                                             sizeof (guchar));
   fpi_data = g_variant_new ("(@ay)", print_id_var);
   g_object_set (print, "fpi-data", fpi_data, NULL);
@@ -421,11 +437,164 @@ egismoc_get_enrolled_prints (FpDevice *device)
   for (guint i = 0; i < self->enrolled_ids->len; i++)
     {
       FpPrint *print = fp_print_new (device);
-      egismoc_set_print_data (print, g_ptr_array_index (self->enrolled_ids, i), NULL);
+      egismoc_set_print_data (print, g_ptr_array_index (self->enrolled_ids, i), "");
       g_ptr_array_add (result, g_object_ref_sink (print));
     }
 
   return g_steal_pointer (&result);
+}
+
+/*
+ * Validates and uses the SDCP "ConnectResponse" payload to establish a secure
+ * device connection which can then be used to generate enrollment IDs and
+ * verify identities as per SDCP.
+ */
+static void
+egismoc_sdcp_connect_cb (FpDevice *device,
+                         guchar   *buffer_in,
+                         gsize     length_in,
+                         GError   *error)
+{
+  fp_dbg ("SDCP ConnectResponse callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  FpiSdcpDevice *sdcp = FPI_SDCP_DEVICE (device);
+  g_autoptr(FpiSdcpConnectResponse) response = NULL;
+  int pos = EGISMOC_CONNECT_RESPONSE_PREFIX_SIZE;
+
+  if (error)
+    {
+      fpi_ssm_mark_failed (self->task_ssm, error);
+      return;
+    }
+
+  /* Check that the read payload indicates "success" */
+  if (!egismoc_validate_response_suffix (buffer_in,
+                                         length_in,
+                                         rsp_sdcp_connect_success_suffix,
+                                         rsp_sdcp_connect_success_suffix_len))
+    {
+      fpi_ssm_mark_failed (self->task_ssm,
+                          fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                    "Device responded with failure "
+                                                    "instead of SDCP ConnectResponse."));
+      return;
+    }
+
+  /* buf len should be at least larger than all required parts (plus a cert) */
+  if (length_in <= FP_SDCP_RANDOM_SIZE
+                   + FP_SDCP_PUBLIC_KEY_SIZE
+                   + FP_SDCP_PUBLIC_KEY_SIZE
+                   + FP_SDCP_DIGEST_SIZE
+                   + FP_SDCP_SIGNATURE_SIZE
+                   + FP_SDCP_SIGNATURE_SIZE
+                   + FP_SDCP_DIGEST_SIZE)
+    {
+      fpi_ssm_mark_failed (self->task_ssm,
+                          fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                    "Device SDCP ConnectResponse "
+                                                    "was not long enough."));
+      return;
+    }
+
+
+  /*
+   * Parse ConnectResponse parts; unfortunately these devices return a somewhat
+   * non-standard ConnectResponse as there are two bytes indicating cert_m's
+   * length which must be handled.
+   */
+  response = g_new0 (FpiSdcpConnectResponse, 1);
+
+  /* r_d */
+  memcpy (response->device_random, buffer_in + pos, FP_SDCP_RANDOM_SIZE);
+  pos += FP_SDCP_RANDOM_SIZE;
+
+  /* next two bytes are an unsigned short giving the cert_m length */
+  response->model_certificate_len = buffer_in[pos] << 8 | buffer_in[pos + 1];
+  pos += 2;
+
+  /* cert_m bytes based on length fetched above */
+  response->model_certificate = g_malloc0 (response->model_certificate_len);
+  memcpy (response->model_certificate, buffer_in + pos, response->model_certificate_len);
+  pos += response->model_certificate_len;
+
+  /* pk_d */
+  memcpy (response->device_public_key, buffer_in + pos, FP_SDCP_PUBLIC_KEY_SIZE);
+  pos += FP_SDCP_PUBLIC_KEY_SIZE;
+
+  /* pk_f */
+  memcpy (response->firmware_public_key, buffer_in + pos, FP_SDCP_PUBLIC_KEY_SIZE);
+  pos += FP_SDCP_PUBLIC_KEY_SIZE;
+
+  /* h_f */
+  memcpy (response->firmware_hash, buffer_in + pos, FP_SDCP_DIGEST_SIZE);
+  pos += FP_SDCP_DIGEST_SIZE;
+
+  /* s_m */
+  memcpy (response->model_signature, buffer_in + pos, FP_SDCP_SIGNATURE_SIZE);
+  pos += FP_SDCP_SIGNATURE_SIZE;
+
+  /* s_d */
+  memcpy (response->device_signature, buffer_in + pos, FP_SDCP_SIGNATURE_SIZE);
+  pos += FP_SDCP_SIGNATURE_SIZE;
+
+  /* m */
+  memcpy (response->mac, buffer_in + pos, FP_SDCP_DIGEST_SIZE);
+  pos += FP_SDCP_DIGEST_SIZE;
+
+  /* Derive SDCP keys and establish secured connection */
+  if (!fpi_sdcp_derive_keys_and_verify_connect (sdcp, response))
+    fpi_ssm_mark_failed (self->task_ssm,
+                         fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                   "Secure connection could "
+                                                   "not be established."));
+  else
+    fpi_ssm_next_state (self->task_ssm);
+}
+
+/*
+ * Builds the full SDCP "Connect" payload. This payload can be used during either
+ * enrollment or identify/verify actions depending on which one is needed first.
+ */
+static guchar *
+egismoc_get_sdcp_connect_cmd (FpDevice *device,
+                              gsize    *length_out)
+{
+  fp_dbg ("Get SDCP Connect command");
+  FpiSdcpDevice *sdcp = FPI_SDCP_DEVICE (device);
+  g_autofree guchar *host_random = NULL;
+  g_autofree guchar *host_public_key = NULL;
+  g_auto(FpiByteWriter) writer = {0};
+  gboolean written = TRUE;
+
+  const int length = cmd_sdcp_connect_prefix_len
+                     + FP_SDCP_RANDOM_SIZE
+                     + FP_SDCP_PUBLIC_KEY_SIZE
+                     + cmd_sdcp_connect_suffix_len;
+
+  host_random = fpi_sdcp_get_host_random (sdcp);
+  host_public_key = fpi_sdcp_get_host_public_key (sdcp);
+
+  /* pre-fill entire payload with 00s */
+  fpi_byte_writer_init_with_size (&writer, length, TRUE);
+
+  written &= fpi_byte_writer_put_data (&writer, cmd_sdcp_connect_prefix,
+                                       cmd_sdcp_connect_prefix_len);
+
+  written &= fpi_byte_writer_put_data (&writer, host_random,
+                                       FP_SDCP_RANDOM_SIZE);
+
+  written &= fpi_byte_writer_put_data (&writer, host_public_key,
+                                       FP_SDCP_PUBLIC_KEY_SIZE);
+
+  written &= fpi_byte_writer_put_data (&writer, cmd_sdcp_connect_suffix,
+                                       cmd_sdcp_connect_suffix_len);
+
+  g_assert (written);
+
+  if (length_out)
+    *length_out = length;
+
+  return fpi_byte_writer_reset_and_get_data (&writer);
 }
 
 static void
@@ -436,6 +605,12 @@ egismoc_list_fill_enrolled_ids_cb (FpDevice *device,
 {
   fp_dbg ("List callback");
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  const guint8 *data;
+  guchar *print_id = NULL;
+  gchar *print_id_hex = NULL;
+
+  FpiByteReader reader;
+  gboolean read = TRUE;
 
   if (error)
     {
@@ -445,9 +620,6 @@ egismoc_list_fill_enrolled_ids_cb (FpDevice *device,
 
   g_clear_pointer (&self->enrolled_ids, g_ptr_array_unref);
   self->enrolled_ids = g_ptr_array_new_with_free_func (g_free);
-
-  FpiByteReader reader;
-  gboolean read = TRUE;
 
   fpi_byte_reader_init (&reader, buffer_in, length_in);
 
@@ -460,18 +632,20 @@ egismoc_list_fill_enrolled_ids_cb (FpDevice *device,
    */
   while (read)
     {
-      const guint8 *data;
-      g_autofree gchar *print_id = NULL;
-
-      read &= fpi_byte_reader_get_data (&reader, EGISMOC_FINGERPRINT_DATA_SIZE,
+      read &= fpi_byte_reader_get_data (&reader, FP_SDCP_ENROLLMENT_ID_SIZE,
                                         &data);
       if (!read)
         break;
 
-      print_id = g_strndup ((gchar *) data, EGISMOC_FINGERPRINT_DATA_SIZE);
-      fp_dbg ("Device fingerprint %0d: %.*s", self->enrolled_ids->len + 1,
-              EGISMOC_FINGERPRINT_DATA_SIZE, print_id);
+      print_id = g_malloc0 (FP_SDCP_ENROLLMENT_ID_SIZE);
+      memcpy (print_id, data, FP_SDCP_ENROLLMENT_ID_SIZE);
+      print_id_hex = OPENSSL_buf2hexstr (print_id, FP_SDCP_ENROLLMENT_ID_SIZE);
+
+      fp_dbg ("Device fingerprint %0d: %s", self->enrolled_ids->len + 1, print_id_hex);
+
       g_ptr_array_add (self->enrolled_ids, g_steal_pointer (&print_id));
+      g_free (print_id);
+      g_free (print_id_hex);
     }
 
   fp_info ("Number of currently enrolled fingerprints on the device is %d",
@@ -527,6 +701,7 @@ egismoc_get_delete_cmd (FpDevice *device,
   g_autoptr(GVariant) print_data_id_var = NULL;
   const guchar *print_data_id = NULL;
   gsize print_data_id_len = 0;
+  g_autofree gchar *print_data_id_hex = NULL;
   g_autofree gchar *print_description = NULL;
   g_autofree guchar *enrolled_print_id = NULL;
   g_autofree guchar *result = NULL;
@@ -552,7 +727,7 @@ egismoc_get_delete_cmd (FpDevice *device,
   else if (self->enrolled_ids)
     num_to_delete = self->enrolled_ids->len;
 
-  const gsize body_length = sizeof (guchar) * EGISMOC_FINGERPRINT_DATA_SIZE *
+  const gsize body_length = sizeof (guchar) * FP_SDCP_ENROLLMENT_ID_SIZE *
                             num_to_delete;
   /* total_length is the 6 various bytes plus prefix and body payload */
   const gsize total_length = (sizeof (guchar) * 6) + cmd_delete_prefix_len +
@@ -616,14 +791,11 @@ egismoc_get_delete_cmd (FpDevice *device,
       print_data_id = g_variant_get_fixed_array (print_data_id_var,
                                                  &print_data_id_len, sizeof (guchar));
 
-      if (!g_str_has_prefix (print_description, "FP"))
-        fp_dbg ("Fingerprint '%s' was not created by libfprint; deleting anyway.",
-                print_description);
-
-      fp_info ("Delete fingerprint %s (%s)", print_description, print_data_id);
+      print_data_id_hex = OPENSSL_buf2hexstr (print_data_id, FP_SDCP_ENROLLMENT_ID_SIZE);
+      fp_info ("Delete fingerprint %s (%s)", print_description, print_data_id_hex);
 
       written &= fpi_byte_writer_put_data (&writer, print_data_id,
-                                           EGISMOC_FINGERPRINT_DATA_SIZE);
+                                           FP_SDCP_ENROLLMENT_ID_SIZE);
     }
   /* Otherwise assume this is a "clear" - just loop through and append all enrolled IDs */
   else if (self->enrolled_ids)
@@ -632,7 +804,7 @@ egismoc_get_delete_cmd (FpDevice *device,
         {
           written &= fpi_byte_writer_put_data (&writer,
                                                g_ptr_array_index (self->enrolled_ids, i),
-                                               EGISMOC_FINGERPRINT_DATA_SIZE);
+                                               FP_SDCP_ENROLLMENT_ID_SIZE);
         }
     }
 
@@ -750,6 +922,38 @@ egismoc_delete (FpDevice *device)
 }
 
 static void
+egismoc_commit_cb (FpDevice *device,
+                   guchar   *buffer_in,
+                   gsize     length_in,
+                   GError   *error)
+{
+  fp_dbg ("Enroll commit callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+
+  g_clear_pointer (&self->enrollment_nonce, g_free);
+
+  if (error)
+    {
+      fpi_ssm_mark_failed (self->task_ssm, error);
+      return;
+    }
+
+  if (!egismoc_validate_response_suffix (buffer_in,
+                                         length_in,
+                                         rsp_commit_success_suffix,
+                                         rsp_commit_success_suffix_len))
+    {
+      fpi_ssm_mark_failed (self->task_ssm, 
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                     "Enrollment was rejected "
+                                                     "by the device."));
+      return;
+    }
+
+  fpi_ssm_next_state (self->task_ssm);
+}
+
+static void
 egismoc_enroll_status_report (FpDevice    *device,
                               EnrollPrint *enroll_print,
                               EnrollStatus status,
@@ -808,11 +1012,7 @@ egismoc_read_capture_cb (FpDevice *device,
     }
 
   /* Check that the read payload indicates "success" */
-  if (egismoc_validate_response_prefix (buffer_in,
-                                        length_in,
-                                        rsp_read_success_prefix,
-                                        rsp_read_success_prefix_len) &&
-      egismoc_validate_response_suffix (buffer_in,
+  if (egismoc_validate_response_suffix (buffer_in,
                                         length_in,
                                         rsp_read_success_suffix,
                                         rsp_read_success_suffix_len))
@@ -825,11 +1025,7 @@ egismoc_read_capture_cb (FpDevice *device,
       /* If not success then the sensor can either report "off center" or "sensor is dirty" */
 
       /* "Off center" */
-      if (egismoc_validate_response_prefix (buffer_in,
-                                            length_in,
-                                            rsp_read_offcenter_prefix,
-                                            rsp_read_offcenter_prefix_len) &&
-          egismoc_validate_response_suffix (buffer_in,
+      if (egismoc_validate_response_suffix (buffer_in,
                                             length_in,
                                             rsp_read_offcenter_suffix,
                                             rsp_read_offcenter_suffix_len))
@@ -856,6 +1052,43 @@ egismoc_read_capture_cb (FpDevice *device,
     fpi_ssm_next_state (self->task_ssm);
   else
     fpi_ssm_jump_to_state (self->task_ssm, ENROLL_CAPTURE_SENSOR_RESET);
+}
+
+static void
+egismoc_enroll_starting_cb (FpDevice *device,
+                            guchar   *buffer_in,
+                            gsize     length_in,
+                            GError   *error)
+{
+  fp_dbg ("Enroll starting callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+
+  if (error)
+    {
+      fpi_ssm_mark_failed (self->task_ssm, error);
+      return;
+    }
+
+  if (!egismoc_validate_response_suffix (buffer_in,
+                                        length_in,
+                                        rsp_enroll_starting_suffix,
+                                        rsp_enroll_starting_suffix_len))
+    {
+      fpi_ssm_mark_failed (self->task_ssm, 
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                     "Invalid response when "
+                                                     "starting enrollment."));
+      return;
+    }
+
+  /* clear and fetch SDCP device enrollment nonce from response */
+  g_clear_pointer (&self->enrollment_nonce, g_free);
+  self->enrollment_nonce = g_malloc0 (FP_SDCP_NONCE_SIZE);
+  memcpy (self->enrollment_nonce,
+          buffer_in + EGISMOC_ENROLL_STARTING_RESPONSE_PREFIX_SIZE,
+          FP_SDCP_NONCE_SIZE);
+
+  fpi_ssm_next_state (self->task_ssm);
 }
 
 static void
@@ -909,7 +1142,7 @@ egismoc_get_check_cmd (FpDevice *device,
    * 3) Hard-coded prefix (cmd_check_prefix)
    * 4) 2-byte size indiciator, 20*Number of enrolled identifiers without plus 9
    *    ((enrolled_ids->len + 1) * 0x20)
-   * 5) Hard-coded 32 * 0x00 bytes
+   * 5) SDCP Identify nonce (always hard-coded 32 * 0x00 bytes on these devices)
    * 6) All of the currently registered prints in their 32-byte device identifiers
    *    (enrolled_list)
    * 7) Hard-coded suffix (cmd_check_suffix)
@@ -917,7 +1150,7 @@ egismoc_get_check_cmd (FpDevice *device,
 
   g_assert (self->enrolled_ids);
   const gsize body_length = sizeof (guchar) * self->enrolled_ids->len *
-                            EGISMOC_FINGERPRINT_DATA_SIZE;
+                            FP_SDCP_ENROLLMENT_ID_SIZE;
 
   /* prefix length can depend on the type */
   const gsize check_prefix_length = (fpi_device_get_driver_data (device) &
@@ -929,7 +1162,7 @@ egismoc_get_check_cmd (FpDevice *device,
    * the body payload */
   const gsize total_length = (sizeof (guchar) * 6)
                              + check_prefix_length
-                             + EGISMOC_CMD_CHECK_SEPARATOR_LENGTH
+                             + FP_SDCP_NONCE_SIZE
                              + body_length
                              + cmd_check_suffix_len;
 
@@ -983,15 +1216,15 @@ egismoc_get_check_cmd (FpDevice *device,
                                             (self->enrolled_ids->len + 1) * 0x20);
     }
 
-  /* add 00s "separator" to offset position */
-  written &= fpi_byte_writer_change_pos (&writer,
-                                         EGISMOC_CMD_CHECK_SEPARATOR_LENGTH);
+  /* skip ahead to leave Identify nonce as 00s (always 00s for egismoc devices) */
+  written &= fpi_byte_writer_change_pos (&writer, FP_SDCP_NONCE_SIZE);
 
+  /* add each of the enrolled IDs */
   for (guint i = 0; i < self->enrolled_ids->len && written; i++)
     {
       written &= fpi_byte_writer_put_data (&writer,
                                            g_ptr_array_index (self->enrolled_ids, i),
-                                           EGISMOC_FINGERPRINT_DATA_SIZE);
+                                           FP_SDCP_ENROLLMENT_ID_SIZE);
     }
 
   /* command suffix */
@@ -1011,14 +1244,28 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
 {
   g_auto(FpiByteWriter) writer = {0};
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  FpiSdcpDevice *sdcp_dev = FPI_SDCP_DEVICE (device);
   EnrollPrint *enroll_print = fpi_ssm_get_data (ssm);
   g_autofree guchar *payload = NULL;
   gsize payload_length = 0;
-  g_autofree gchar *device_print_id = NULL;
   g_autofree gchar *user_id = NULL;
+  g_autofree guchar *device_print_id = NULL;
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case ENROLL_SDCP_CONNECT:
+      if (fpi_sdcp_device_is_connected (sdcp_dev))
+        {
+          fpi_ssm_next_state (ssm);
+        }
+      else
+        {
+          payload = egismoc_get_sdcp_connect_cmd (device, &payload_length);
+          egismoc_exec_cmd (device, g_steal_pointer (&payload), payload_length,
+                            g_free, egismoc_sdcp_connect_cb);
+        }
+      break;
+
     case ENROLL_GET_ENROLLED_IDS:
       /* get enrolled_ids from device for use in check stages below */
       egismoc_exec_cmd (device, cmd_list, cmd_list_len,
@@ -1062,7 +1309,7 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
 
     case ENROLL_START:
       egismoc_exec_cmd (device, cmd_enroll_starting, cmd_enroll_starting_len,
-                        NULL, egismoc_task_ssm_next_state_cb);
+                        NULL, egismoc_enroll_starting_cb);
       break;
 
     case ENROLL_CAPTURE_SENSOR_RESET:
@@ -1080,6 +1327,11 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
       egismoc_wait_finger_on_sensor (ssm, device);
       break;
 
+    case ENROLL_CAPTURE_POST_WAIT_FINGER:
+      egismoc_exec_cmd (device, cmd_capture_post_wait_finger, cmd_capture_post_wait_finger_len,
+                        NULL, egismoc_task_ssm_next_state_cb);
+      break;
+
     case ENROLL_CAPTURE_READ_RESPONSE:
       egismoc_exec_cmd (device, cmd_read_capture, cmd_read_capture_len,
                         NULL, egismoc_read_capture_cb);
@@ -1091,10 +1343,9 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
       break;
 
     case ENROLL_COMMIT:
+      g_assert (self->enrollment_nonce);
       user_id = fpi_print_generate_user_id (enroll_print->print);
-      fp_dbg ("New fingerprint ID: %s", user_id);
-
-      device_print_id = g_strndup (user_id, EGISMOC_FINGERPRINT_DATA_SIZE);
+      device_print_id = fpi_sdcp_generate_enrollment_id (sdcp_dev, self->enrollment_nonce);
       egismoc_set_print_data (enroll_print->print, device_print_id, user_id);
 
       fpi_byte_writer_init (&writer);
@@ -1105,7 +1356,7 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
           break;
         }
       if (!fpi_byte_writer_put_data (&writer, (guint8 *) device_print_id,
-                                     EGISMOC_FINGERPRINT_DATA_SIZE))
+                                     FP_SDCP_ENROLLMENT_ID_SIZE))
         {
           fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_PROTO));
           break;
@@ -1113,11 +1364,11 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
 
       payload_length = fpi_byte_writer_get_size (&writer);
       egismoc_exec_cmd (device, fpi_byte_writer_reset_and_get_data (&writer),
-                        payload_length,
-                        g_free, egismoc_task_ssm_next_state_cb);
+                        payload_length, g_free, egismoc_commit_cb);
       break;
 
     case ENROLL_COMMIT_SENSOR_RESET:
+      g_clear_pointer (&self->enrollment_nonce, g_free);
       egismoc_exec_cmd (device, cmd_sensor_reset, cmd_sensor_reset_len,
                         NULL, egismoc_task_ssm_next_state_cb);
       break;
@@ -1153,7 +1404,10 @@ egismoc_identify_check_cb (FpDevice *device,
 {
   fp_dbg ("Identify check callback");
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
-  gchar device_print_id[EGISMOC_FINGERPRINT_DATA_SIZE];
+  FpiSdcpDevice *sdcp_dev = FPI_SDCP_DEVICE (device);
+  g_autofree guchar *host_nonce = g_malloc0 (FP_SDCP_NONCE_SIZE); /* always 00s on these devices */
+  guchar device_mac[FP_SDCP_DIGEST_SIZE];
+  guchar device_print_id[FP_SDCP_ENROLLMENT_ID_SIZE];
   FpPrint *print = NULL;
   FpPrint *verify_print = NULL;
   GPtrArray *prints;
@@ -1173,18 +1427,24 @@ egismoc_identify_check_cb (FpDevice *device,
                                         rsp_identify_match_suffix_len))
     {
       /*
-         On success, there is a 32 byte array of "something"(?) in chars 14-45
-         and then the 32 byte array ID of the matched print comes as chars 46-77
+        Normally for SDCP the "Authorized Identity" response should be (id,m)
+        but on egismoc devices there is a prefix, followed by (m,id) (yes, it
+        is backwards), followed by a suffix.
        */
-      memcpy (device_print_id,
-              buffer_in + EGISMOC_IDENTIFY_RESPONSE_PRINT_ID_OFFSET,
-              EGISMOC_FINGERPRINT_DATA_SIZE);
+      memcpy (device_mac,
+              buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE,
+              FP_SDCP_DIGEST_SIZE);
 
-      /* Create a new print from this device_print_id and then see if it matches
-       * the one indicated
+      memcpy (device_print_id,
+              buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE + FP_SDCP_DIGEST_SIZE,
+              FP_SDCP_ENROLLMENT_ID_SIZE);
+
+      /* 
+        Create a new print from this device_print_id and then see if it matches
+        the one indicated.
        */
       print = fp_print_new (device);
-      egismoc_set_print_data (print, device_print_id, NULL);
+      egismoc_set_print_data (print, device_print_id, "");
 
       if (!print)
         {
@@ -1192,6 +1452,17 @@ egismoc_identify_check_cb (FpDevice *device,
                                fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                          "Failed to build a print from "
                                                          "device response."));
+          return;
+        }
+
+      /* Ensure the returned identity is valid per SDCP. */
+      if (!fpi_sdcp_verify_authorized_identity (sdcp_dev, host_nonce,
+                                                device_print_id, device_mac))
+        {
+          fpi_ssm_mark_failed (self->task_ssm,
+                               fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                         "Device SDCP Identify "
+                                                         "response was not valid."));
           return;
         }
 
@@ -1250,11 +1521,25 @@ egismoc_identify_run_state (FpiSsm   *ssm,
                             FpDevice *device)
 {
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  FpiSdcpDevice *sdcp_dev = FPI_SDCP_DEVICE (device);
   g_autofree guchar *payload = NULL;
   gsize payload_length = 0;
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case IDENTIFY_SDCP_CONNECT:
+      if (fpi_sdcp_device_is_connected (sdcp_dev))
+        {
+          fpi_ssm_next_state (ssm);
+        }
+      else
+        {
+          payload = egismoc_get_sdcp_connect_cmd (device, &payload_length);
+          egismoc_exec_cmd (device, g_steal_pointer (&payload), payload_length,
+                            g_free, egismoc_sdcp_connect_cb);
+        }
+      break;
+
     case IDENTIFY_GET_ENROLLED_IDS:
       /* get enrolled_ids from device for use in check stages below */
       egismoc_exec_cmd (device, cmd_list, cmd_list_len,
@@ -1601,6 +1886,7 @@ static void
 fpi_device_egismoc_class_init (FpiDeviceEgisMocClass *klass)
 {
   FpDeviceClass *dev_class = FP_DEVICE_CLASS (klass);
+  FpiSdcpDeviceClass *sdcp_dev_class = FPI_SDCP_DEVICE_CLASS (klass);
 
   dev_class->id = FP_COMPONENT;
   dev_class->full_name = EGISMOC_DRIVER_FULLNAME;
@@ -1626,4 +1912,8 @@ fpi_device_egismoc_class_init (FpiDeviceEgisMocClass *klass)
 
   fpi_device_class_auto_initialize_features (dev_class);
   dev_class->features |= FP_DEVICE_FEATURE_DUPLICATES_CHECK;
+
+  /* some but not all egismoc devices support reconnect; easiest to just disable for all */
+  sdcp_dev_class->supports_reconnect = FALSE;
+  sdcp_dev_class->claim_expiration_seconds = 86400;
 }

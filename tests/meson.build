@@ -256,6 +256,7 @@ unit_tests = [
     'fpi-device',
     'fpi-ssm',
     'fpi-assembling',
+    'fpi-sdcp-device',
 ]
 
 if 'virtual_image' in drivers

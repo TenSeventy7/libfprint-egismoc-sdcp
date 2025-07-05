@@ -22,6 +22,7 @@ libfprint_private_sources = [
     'fpi-image-device.c',
     'fpi-image.c',
     'fpi-print.c',
+    'fpi-sdcp-device.c',
     'fpi-ssm.c',
     'fpi-usb-transfer.c',
 ] + spi_sources
@@ -48,6 +49,7 @@ libfprint_private_headers = [
     'fpi-minutiae.h',
     'fpi-print.h',
     'fpi-usb-transfer.h',
+    'fpi-sdcp-device.h',
     'fpi-ssm.h',
 ] + spi_headers
 

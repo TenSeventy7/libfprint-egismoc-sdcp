@@ -27,10 +27,10 @@
 
 #pragma once
 
-#include "fpi-device.h"
+#include "fpi-sdcp-device.h"
 #include "fpi-ssm.h"
 
-G_DECLARE_FINAL_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI, DEVICE_EGISMOC, FpDevice)
+G_DECLARE_FINAL_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI, DEVICE_EGISMOC, FpiSdcpDevice)
 
 #define EGISMOC_DRIVER_FULLNAME "Egis Technology (LighTuning) Match-on-Chip"
 
@@ -52,7 +52,11 @@ G_DECLARE_FINAL_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI, DEVICE_EGISMOC,
 
 #define EGISMOC_MAX_ENROLL_STAGES_DEFAULT 10
 #define EGISMOC_MAX_ENROLL_NUM 10
-#define EGISMOC_FINGERPRINT_DATA_SIZE 32
+#define EGISMOC_SENSOR_ON_FINGER_READ_ATTEMPTS 10000
+
+#define EGISMOC_CONNECT_RESPONSE_PREFIX_SIZE 15
+#define EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE 14
+#define EGISMOC_ENROLL_STARTING_RESPONSE_PREFIX_SIZE 14
 #define EGISMOC_LIST_RESPONSE_PREFIX_SIZE 14
 #define EGISMOC_LIST_RESPONSE_SUFFIX_SIZE 2
 
@@ -71,6 +75,9 @@ static guchar cmd_fw_version[] = {0x00, 0x00, 0x00, 0x07, 0x50, 0x7f, 0x00, 0x00
 static gsize cmd_fw_version_len = sizeof (cmd_fw_version) / sizeof (cmd_fw_version[0]);
 static guchar rsp_fw_version_suffix[] = {0x90, 0x00};
 static gsize rsp_fw_version_suffix_len = sizeof (rsp_fw_version_suffix) / sizeof (rsp_fw_version_suffix[0]);
+
+static guchar rsp_sensor_has_finger_suffix[] = {0x90, 0x00, 0x90, 0x00};
+static gsize rsp_sensor_has_finger_suffix_len = sizeof (rsp_sensor_has_finger_suffix) / sizeof (rsp_sensor_has_finger_suffix[0]);
 
 static guchar cmd_list[] = {0x00, 0x00, 0x00, 0x07, 0x50, 0x19, 0x04, 0x00, 0x00, 0x01, 0x40};
 static gsize cmd_list_len = sizeof (cmd_list) / sizeof (cmd_list[0]);
@@ -93,18 +100,19 @@ static gsize cmd_sensor_enroll_len = sizeof (cmd_sensor_enroll) / sizeof (cmd_se
 
 static guchar cmd_enroll_starting[] = {0x00, 0x00, 0x00, 0x07, 0x50, 0x16, 0x01, 0x00, 0x00, 0x00, 0x20};
 static gsize cmd_enroll_starting_len = sizeof (cmd_enroll_starting) / sizeof (cmd_enroll_starting[0]);
+static guchar rsp_enroll_starting_suffix[] = {0x90, 0x00};
+static gsize rsp_enroll_starting_suffix_len = sizeof (rsp_enroll_starting_suffix) / sizeof (rsp_enroll_starting_suffix[0]);
 
 static guchar cmd_sensor_start_capture[] = {0x00, 0x00, 0x00, 0x04, 0x50, 0x16, 0x02, 0x01};
 static gsize cmd_sensor_start_capture_len = sizeof (cmd_sensor_start_capture) / sizeof (cmd_sensor_start_capture[0]);
 
+static guchar cmd_capture_post_wait_finger[] = {0x00, 0x00, 0x00, 0x07, 0x50, 0x7a, 0x00, 0x00, 0x00, 0x00, 0x80};
+static gsize cmd_capture_post_wait_finger_len = sizeof (cmd_capture_post_wait_finger) / sizeof (cmd_capture_post_wait_finger[0]);
+
 static guchar cmd_read_capture[] = {0x00, 0x00, 0x00, 0x07, 0x50, 0x16, 0x02, 0x02, 0x00, 0x00, 0x02};
 static gsize cmd_read_capture_len = sizeof (cmd_read_capture) / sizeof (cmd_read_capture[0]);
-static guchar rsp_read_success_prefix[] = {0x00, 0x00, 0x00, 0x04};
-static gsize rsp_read_success_prefix_len = sizeof (rsp_read_success_prefix) / sizeof (rsp_read_success_prefix[0]);
 static guchar rsp_read_success_suffix[] = {0x90, 0x00};
 static gsize rsp_read_success_suffix_len = sizeof (rsp_read_success_suffix) / sizeof (rsp_read_success_suffix[0]);
-static guchar rsp_read_offcenter_prefix[] = {0x00, 0x00, 0x00, 0x04};
-static gsize rsp_read_offcenter_prefix_len = sizeof (rsp_read_offcenter_prefix) / sizeof (rsp_read_offcenter_prefix[0]);
 static guchar rsp_read_offcenter_suffix[] = {0x64, 0x91};
 static gsize rsp_read_offcenter_suffix_len = sizeof (rsp_read_offcenter_suffix) / sizeof (rsp_read_offcenter_suffix[0]);
 static guchar rsp_read_dirty_prefix[] = {0x00, 0x00, 0x00, 0x02, 0x64};
@@ -112,6 +120,8 @@ static gsize rsp_read_dirty_prefix_len = sizeof (rsp_read_dirty_prefix) / sizeof
 
 static guchar cmd_commit_starting[] = {0x00, 0x00, 0x00, 0x07, 0x50, 0x16, 0x05, 0x00, 0x00, 0x00, 0x20};
 static gsize cmd_commit_starting_len = sizeof (cmd_commit_starting) / sizeof (cmd_commit_starting[0]);
+static guchar rsp_commit_success_suffix[] = {0x90, 0x00};
+static gsize rsp_commit_success_suffix_len = sizeof (rsp_commit_success_suffix) / sizeof (rsp_commit_success_suffix[0]);
 
 
 /* commands which exist on the device but are currently not used */
@@ -130,8 +140,13 @@ static gsize cmd_commit_starting_len = sizeof (cmd_commit_starting) / sizeof (cm
 /* prefixes/suffixes and other things for dynamically created command payloads */
 
 #define EGISMOC_CHECK_BYTES_LENGTH 2
-#define EGISMOC_IDENTIFY_RESPONSE_PRINT_ID_OFFSET 46
-#define EGISMOC_CMD_CHECK_SEPARATOR_LENGTH 32
+
+static guchar cmd_sdcp_connect_prefix[] = {0x00, 0x00, 0x00, 0x6b, 0x50, 0x57, 0x01, 0x00, 0x00, 0x00, 0x62, 0x20};
+static gsize cmd_sdcp_connect_prefix_len = sizeof (cmd_sdcp_connect_prefix) / sizeof (cmd_sdcp_connect_prefix[0]);
+static guchar cmd_sdcp_connect_suffix[] = {0x00, 0x00};
+static gsize cmd_sdcp_connect_suffix_len = sizeof (cmd_sdcp_connect_suffix) / sizeof (cmd_sdcp_connect_suffix[0]);
+static guchar rsp_sdcp_connect_success_suffix[] = {0x90, 0x00};
+static gsize rsp_sdcp_connect_success_suffix_len = sizeof (rsp_sdcp_connect_success_suffix) / sizeof (rsp_sdcp_connect_success_suffix[0]);
 
 static guchar cmd_new_print_prefix[] = {0x00, 0x00, 0x00, 0x27, 0x50, 0x16, 0x03, 0x00, 0x00, 0x00, 0x20};
 static gsize cmd_new_print_prefix_len = sizeof (cmd_new_print_prefix) / sizeof (cmd_new_print_prefix[0]);
@@ -170,6 +185,7 @@ typedef enum {
 } DeviceInitStates;
 
 typedef enum {
+  IDENTIFY_SDCP_CONNECT,
   IDENTIFY_GET_ENROLLED_IDS,
   IDENTIFY_CHECK_ENROLLED_NUM,
   IDENTIFY_SENSOR_RESET,
@@ -183,6 +199,7 @@ typedef enum {
 } IdentifyStates;
 
 typedef enum {
+  ENROLL_SDCP_CONNECT,
   ENROLL_GET_ENROLLED_IDS,
   ENROLL_CHECK_ENROLLED_NUM,
   ENROLL_SENSOR_RESET,
@@ -194,6 +211,7 @@ typedef enum {
   ENROLL_CAPTURE_SENSOR_RESET,
   ENROLL_CAPTURE_SENSOR_START_CAPTURE,
   ENROLL_CAPTURE_WAIT_FINGER,
+  ENROLL_CAPTURE_POST_WAIT_FINGER,
   ENROLL_CAPTURE_READ_RESPONSE,
   ENROLL_COMMIT_START,
   ENROLL_COMMIT,
