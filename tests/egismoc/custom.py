@@ -1,5 +1,60 @@
 #!/usr/bin/python3
 
+# In order for all of the payloads to match, the SDCP connection claim from when the capture is
+# taken needs to be the same as every time that the test is executed.
+# For that, we will need to cache the claim that is used by the unit test, so we can build the file
+# in this script and create it where the driver will pick it up every time the test is run.
+# However, if we create the SDCP connection during capture, but use a cached claim during the test,
+# then the driver-to-device workflow is different (we do not execute SDCP Connect command when using
+# an already cached claim, so that packet from the capture will not match what the driver does in
+# the test, so the test execution never matches the captured packets--it does not work!).
+# So, this means that we need to create a cached claim before even capturing, and then save that
+# claim here so that the same cached claim will be used both during capture as well as all
+# test executions.
+# Unfortunately this means that we will not be able to test the SDCP Connect command as part of this
+# test. But perhaps we can create a second test that only tests SDCP Connect and nothing else?
+
+# Here is how you can create your own for other variants that should work:
+# 1. Wipe any existing cached claims under temp:
+#        sudo rm -rf /tmp/.libfprint
+# 2. Use the example app ./examples/enroll to enroll one or more prints
+#        sudo ./examples/enroll
+# 3. Copy the bytes from the latest "valid" cached claim to the claim_bytes value below. You can get
+#    the value using a command like:
+#        sudo hexdump -e '16/1 "%02x " "\n"' $(sudo find /tmp/.libfprint/egismoc/ -name sdcp-claim)
+
+claim_bytes = bytes.fromhex("""
+a6 12 97 2a 13 00 00 00 39 e8 fc da 42 39 06 00
+1c 72 86 5a fe 85 3a 28 68 1d 88 b3 0c cb 81 0b
+84 19 75 38 b2 43 c7 57 60 27 05 66 ab ab d8 b7
+04 2c 92 51 13 83 c8 aa 32 ee 51 ef 49 95 7a 6f
+84 d3 03 1b 58 9c a1 6b 55 d1 48 37 8e c0 9e ba
+a1 12 9c 4a 28 f8 e4 f9 5d 4d f4 e6 4d 4b e5 e7
+85 7f 5c be be e4 2e 17 cc ad 87 b0 0f 0a c3 2d
+2d 37 c9 ae 1e 83 39 16 8d 4c 7c 53 a1 89 f0 b1
+db 89 f5 6b 73 0a d6 b9 bf 94 5e b3 da 9d 6e ca
+c9 20 8c 5a ef ed 97 04 f1 7d ca d9 85 f1 31 8e
+49 e5 1d 48 fa b9 ed 89 26 64 dc a5 e7 42 cd 94
+e9 94 b6 64 33 bd 5c f7 e4 37 c4 fd 61 cb 58 09
+8c 22 c6 c8 72 6a f4 df 69 6d 16 5a b6 fc 68 3c
+b5 30 6d 02 f5 de ae 35 ba d2 ab 91 06 75 28 74
+00 0c bb 99 62 40 7d 66 3e 46 be 11 7c e3 a2 c8
+ff 59 7f f3 66 ed 13 a1 b6 91 a8 72 81 d9 f6 04
+4c a4 b2 ad 13 b4 aa b9 4a b3 f2 73 2c 67 3c 13
+92 f1 00 d1 00 b1 00 91 00 71 00 30 00
+""")
+
+# 4. Wipe the claims cache folder:
+#      sudo rm -rf /tmp/.libfprint
+# 5. Run the capture script
+#      sudo tests/create-driver-test.py egismoc VARIANT
+# 6. Wipe the claims cache folder again:
+#      sudo rm -rf /tmp/.libfprint
+# 7. Run the test and ensure it works:
+#      meson test egismoc-VARIANT --verbose
+
+# Now, on to the test script!!
+
 import traceback
 import sys
 import time
@@ -23,55 +78,23 @@ devices = c.get_devices()
 d = devices[0]
 del devices
 
-# In order for all of the payloads to match, we will need cache the same
-# SDCP claim as was used when the test was generated.
-
-# You can fetch the claim value to paste below after capturing your test using something like this:
-# sudo hexdump -e '16/1 "%02x " "\n"' /tmp/.libfprint/egismoc/emulated-device/sdcp-claim
-
-claim_bytes = bytes.fromhex("""
-ab 7f 71 1a 02 00 00 00 79 0d 65 48 2f 39 06 00
-02 52 04 b8 9a d0 f8 e1 f2 81 f9 4b 02 94 92 7c
-d7 2b 79 7e d1 03 73 0e 1b 50 ae c0 46 65 be e3
-04 e2 33 77 fd ca e1 b7 a6 4f 8b ba 57 d8 95 af
-e0 8d 34 fe 9a c6 82 14 ec a4 f7 ac 64 b9 85 c0
-98 ff 0f c8 35 54 90 fd 17 75 bc ef 36 b2 e1 74
-7b 7f 39 f9 8f 41 74 38 36 4e 39 99 78 49 1f 70
-30 2b fc f4 80 06 24 8e 4e 6e 52 d8 36 17 2a f8
-ad 33 cf d0 be 04 5c 06 c1 80 5c c4 3a eb 9c b2
-3c dc 4a d0 d0 61 0a 1f 64 1d 7d 84 4d d6 e7 06
-92 ac 28 09 98 5c 16 0e ec d0 98 1c 70 d0 f5 23
-b4 c3 1d 20 15 1e cf 3c da 5b 18 2b 17 06 9d 07
-4e 92 bb e1 36 ff a7 2a 3b 6c c8 19 d5 72 8d e5
-ad 73 a9 ea 0a 52 11 48 fb 1e e4 a8 0c 52 62 5b
-ad 05 80 26 c1 e2 c4 40 89 85 89 dc 0d 8a 2d 77
-8e 24 84 34 6c 72 73 e8 44 be 7f 56 b4 ef df 70
-90 4a 32 dd 3e 5f f2 7f fb ff cb ee d8 8d 48 22
-1e f1 00 d1 00 b1 00 91 00 71 00 30 00
-""")
-
-# Set this to False when capturing or True when testing
-write_claim_file=True
-
-# Also, if you capture with sudo, then it might help to run this after capturing but before testing:
-# sudo rm -rf /tmp/.libfprint
-
-# Now we will strip out the first 16 bytes (uptime and realtime) and replace them with current
-# values
+# We will need to set a new uptime and realtime in the above claim bytes so that libfprint will not 
+# se the cached claim as "expired". These are both int64 numbers in little endian.
 
 uptime = trunc(time.clock_gettime(time.CLOCK_MONOTONIC_RAW) * 1000000) # g_get_monotonic_time()
 realtime = trunc(time.clock_gettime(time.CLOCK_REALTIME) * 1000000) # g_get_real_time()
 uptime_bytes = uptime.to_bytes(8, byteorder = 'little')
 realtime_bytes = realtime.to_bytes(8, byteorder = 'little')
+
+# Swap out uptime and realtime with our new values
 claim_bytes = uptime_bytes + realtime_bytes + claim_bytes[16:]
 
-if write_claim_file:
-    # Now we will pre-cache this claim file so that the test script will use the same host keys
-    claim_file_path = path.join(gettempdir(), ".libfprint", "egismoc", "emulated-device")
-    makedirs(claim_file_path, exist_ok=True)
-    claim_file_path = path.join(claim_file_path, "sdcp-claim")
-    with open(claim_file_path, "wb") as claim_file:
-        claim_file.write(claim_bytes)
+# Now we will pre-cache this claim file so that the test script will re-use the same SDCP claim as the capture
+claim_file_path = path.join(gettempdir(), ".libfprint", "egismoc", "emulated-device")
+makedirs(claim_file_path, exist_ok=True)
+claim_file_path = path.join(claim_file_path, "sdcp-claim")
+with open(claim_file_path, "wb") as claim_file:
+    claim_file.write(claim_bytes)
 
 d.open_sync()
 

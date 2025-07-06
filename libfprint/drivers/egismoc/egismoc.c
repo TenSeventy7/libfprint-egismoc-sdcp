@@ -1057,6 +1057,7 @@ egismoc_enroll_starting_cb (FpDevice *device,
 {
   fp_dbg ("Enroll starting callback");
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  g_autofree gchar *enrollment_nonce_hex = NULL;
 
   if (error)
     {
@@ -1082,6 +1083,9 @@ egismoc_enroll_starting_cb (FpDevice *device,
   memcpy (self->enrollment_nonce,
           buffer_in + EGISMOC_ENROLL_STARTING_RESPONSE_PREFIX_SIZE,
           FP_SDCP_NONCE_SIZE);
+
+  enrollment_nonce_hex = OPENSSL_buf2hexstr (self->enrollment_nonce, FP_SDCP_NONCE_SIZE);
+  fp_dbg ("Device-provided enrollment nonce: %s", enrollment_nonce_hex);
 
   fpi_ssm_next_state (self->task_ssm);
 }
@@ -1400,7 +1404,9 @@ egismoc_identify_check_cb (FpDevice *device,
   FpiSdcpDevice *sdcp_dev = FPI_SDCP_DEVICE (device);
   g_autofree guchar *host_nonce = g_malloc0 (FP_SDCP_NONCE_SIZE); /* always 00s on these devices */
   guchar device_mac[FP_SDCP_DIGEST_SIZE];
+  g_autofree gchar *device_mac_hex = NULL;
   guchar enrollment_id[FP_SDCP_ENROLLMENT_ID_SIZE];
+  g_autofree gchar *enrollment_id_hex = NULL;
   FpPrint *print = NULL;
   FpPrint *verify_print = NULL;
   GPtrArray *prints;
@@ -1431,6 +1437,12 @@ egismoc_identify_check_cb (FpDevice *device,
       memcpy (enrollment_id,
               buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE + FP_SDCP_DIGEST_SIZE,
               FP_SDCP_ENROLLMENT_ID_SIZE);
+
+      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, FP_SDCP_DIGEST_SIZE);
+      device_mac_hex = OPENSSL_buf2hexstr (device_mac, FP_SDCP_DIGEST_SIZE);
+
+      fp_dbg ("Enrollment ID identified by the device: %s", enrollment_id_hex);
+      fp_dbg ("AuthorizedIdentity MAC: %s", device_mac_hex);
 
       /* 
         Create a new print from this enrollment_id and then see if it matches
