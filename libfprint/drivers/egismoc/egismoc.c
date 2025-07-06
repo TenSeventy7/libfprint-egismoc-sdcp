@@ -58,6 +58,7 @@ static const FpIdEntry egismoc_id_table[] = {
   { .vid = 0x1c7a, .pid = 0x0586, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x0587, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x05a1, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 },
+  { .vid = 0x1c7a, .pid = 0x05a5, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_15 },
   { .vid = 0,      .pid = 0,      .driver_data = 0 }
 };
 
@@ -1756,6 +1757,7 @@ egismoc_probe (FpDevice *device)
   GError *error = NULL;
   g_autofree gchar *serial = NULL;
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  guint64 driver_data;
 
   fp_dbg ("%s enter --> ", G_STRFUNC);
 
@@ -1801,8 +1803,11 @@ egismoc_probe (FpDevice *device)
       return;
     }
 
-  if (fpi_device_get_driver_data (device) & EGISMOC_DRIVER_MAX_ENROLL_STAGES_20)
-    self->max_enroll_stages = 20;
+  driver_data = fpi_device_get_driver_data (device);
+  if (driver_data & EGISMOC_DRIVER_MAX_ENROLL_STAGES_20)
+     self->max_enroll_stages = 20;
+  if (driver_data & EGISMOC_DRIVER_MAX_ENROLL_STAGES_15)
+    self->max_enroll_stages = 15;
   else
     self->max_enroll_stages = EGISMOC_MAX_ENROLL_STAGES_DEFAULT;
 
