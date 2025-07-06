@@ -405,24 +405,19 @@ egismoc_wait_finger_on_sensor (FpiSsm   *ssm,
 
 static void
 egismoc_set_print_data (FpPrint      *print,
-                        const guchar *device_print_id,
-                        const gchar  *user_id)
+                        const guchar *enrollment_id)
 {
-  GVariant *print_id_var = NULL;
   GVariant *fpi_data = NULL;
-
-  fpi_print_fill_from_user_id (print, user_id);
+  GVariant *enrollment_id_var = NULL;
 
   fpi_print_set_type (print, FPI_PRINT_RAW);
   fpi_print_set_device_stored (print, TRUE);
 
-  g_object_set (print, "description", user_id, NULL);
-
-  print_id_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
-                                            device_print_id,
-                                            FP_SDCP_ENROLLMENT_ID_SIZE,
-                                            sizeof (guchar));
-  fpi_data = g_variant_new ("(@ay)", print_id_var);
+  enrollment_id_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
+                                                 enrollment_id,
+                                                 FP_SDCP_ENROLLMENT_ID_SIZE,
+                                                 sizeof (guchar));
+  fpi_data = g_variant_new ("(@ay)", enrollment_id_var);
   g_object_set (print, "fpi-data", fpi_data, NULL);
 }
 
@@ -439,7 +434,7 @@ egismoc_get_enrolled_prints (FpDevice *device)
   for (guint i = 0; i < self->enrolled_ids->len; i++)
     {
       FpPrint *print = fp_print_new (device);
-      egismoc_set_print_data (print, g_ptr_array_index (self->enrolled_ids, i), "");
+      egismoc_set_print_data (print, g_ptr_array_index (self->enrolled_ids, i));
       g_ptr_array_add (result, g_object_ref_sink (print));
     }
 
@@ -608,8 +603,8 @@ egismoc_list_fill_enrolled_ids_cb (FpDevice *device,
   fp_dbg ("List callback");
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
   const guint8 *data;
-  guchar *print_id = NULL;
-  gchar *print_id_hex = NULL;
+  guchar *enrollment_id = NULL;
+  gchar *enrollment_id_hex = NULL;
 
   FpiByteReader reader;
   gboolean read = TRUE;
@@ -628,7 +623,7 @@ egismoc_list_fill_enrolled_ids_cb (FpDevice *device,
   read &= fpi_byte_reader_set_pos (&reader, EGISMOC_LIST_RESPONSE_PREFIX_SIZE);
 
   /*
-   * Each fingerprint ID will be returned in this response as a 32 byte array
+   * Each enrollment_id will be returned in this response as a 32 byte array
    * The other stuff in the payload is 16 bytes long, so if there is at least 1
    * print then the length should be at least 16+32=48 bytes long
    */
@@ -639,15 +634,15 @@ egismoc_list_fill_enrolled_ids_cb (FpDevice *device,
       if (!read)
         break;
 
-      print_id = g_malloc0 (FP_SDCP_ENROLLMENT_ID_SIZE);
-      memcpy (print_id, data, FP_SDCP_ENROLLMENT_ID_SIZE);
-      print_id_hex = OPENSSL_buf2hexstr (print_id, FP_SDCP_ENROLLMENT_ID_SIZE);
+      enrollment_id = g_malloc0 (FP_SDCP_ENROLLMENT_ID_SIZE);
+      memcpy (enrollment_id, data, FP_SDCP_ENROLLMENT_ID_SIZE);
+      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, FP_SDCP_ENROLLMENT_ID_SIZE);
 
-      fp_dbg ("Device fingerprint %0d: %s", self->enrolled_ids->len + 1, print_id_hex);
+      fp_dbg ("Device enrollment ID %0d: %s", self->enrolled_ids->len + 1, enrollment_id_hex);
 
-      g_ptr_array_add (self->enrolled_ids, g_steal_pointer (&print_id));
-      g_free (print_id);
-      g_free (print_id_hex);
+      g_ptr_array_add (self->enrolled_ids, g_steal_pointer (&enrollment_id));
+      g_free (enrollment_id);
+      g_free (enrollment_id_hex);
     }
 
   fp_info ("Number of currently enrolled fingerprints on the device is %d",
@@ -700,12 +695,10 @@ egismoc_get_delete_cmd (FpDevice *device,
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
   g_auto(FpiByteWriter) writer = {0};
   g_autoptr(GVariant) print_data = NULL;
-  g_autoptr(GVariant) print_data_id_var = NULL;
-  const guchar *print_data_id = NULL;
-  gsize print_data_id_len = 0;
-  g_autofree gchar *print_data_id_hex = NULL;
-  g_autofree gchar *print_description = NULL;
-  g_autofree guchar *enrolled_print_id = NULL;
+  g_autoptr(GVariant) enrollment_id_var = NULL;
+  const guchar *enrollment_id = NULL;
+  gsize enrollment_id_len = 0;
+  g_autofree gchar *enrollment_id_hex = NULL;
   g_autofree guchar *result = NULL;
   gboolean written = TRUE;
 
@@ -775,11 +768,11 @@ egismoc_get_delete_cmd (FpDevice *device,
       written &= fpi_byte_writer_put_uint8 (&writer, num_to_delete * 0x20);
     }
 
-  /* append desired 32-byte fingerprint IDs */
+  /* append desired enrollment_id(s) */
+
   /* if passed a delete_print then fetch its data from the FpPrint */
   if (delete_print)
     {
-      g_object_get (delete_print, "description", &print_description, NULL);
       g_object_get (delete_print, "fpi-data", &print_data, NULL);
 
       if (!g_variant_check_format_string (print_data, "(@ay)", FALSE))
@@ -789,14 +782,14 @@ egismoc_get_delete_cmd (FpDevice *device,
           return NULL;
         }
 
-      g_variant_get (print_data, "(@ay)", &print_data_id_var);
-      print_data_id = g_variant_get_fixed_array (print_data_id_var,
-                                                 &print_data_id_len, sizeof (guchar));
+      g_variant_get (print_data, "(@ay)", &enrollment_id_var);
+      enrollment_id = g_variant_get_fixed_array (enrollment_id_var,
+                                                 &enrollment_id_len, sizeof (guchar));
 
-      print_data_id_hex = OPENSSL_buf2hexstr (print_data_id, FP_SDCP_ENROLLMENT_ID_SIZE);
-      fp_info ("Delete fingerprint %s (%s)", print_description, print_data_id_hex);
+      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, FP_SDCP_ENROLLMENT_ID_SIZE);
+      fp_info ("Delete enrollment ID %s", enrollment_id_hex);
 
-      written &= fpi_byte_writer_put_data (&writer, print_data_id,
+      written &= fpi_byte_writer_put_data (&writer, enrollment_id,
                                            FP_SDCP_ENROLLMENT_ID_SIZE);
     }
   /* Otherwise assume this is a "clear" - just loop through and append all enrolled IDs */
@@ -1250,8 +1243,7 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
   EnrollPrint *enroll_print = fpi_ssm_get_data (ssm);
   g_autofree guchar *payload = NULL;
   gsize payload_length = 0;
-  g_autofree gchar *user_id = NULL;
-  g_autofree guchar *device_print_id = NULL;
+  g_autofree guchar *enrollment_id = NULL;
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
@@ -1346,9 +1338,8 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
 
     case ENROLL_COMMIT:
       g_assert (self->enrollment_nonce);
-      user_id = fpi_print_generate_user_id (enroll_print->print);
-      device_print_id = fpi_sdcp_generate_enrollment_id (sdcp_dev, self->enrollment_nonce);
-      egismoc_set_print_data (enroll_print->print, device_print_id, user_id);
+      enrollment_id = fpi_sdcp_generate_enrollment_id (sdcp_dev, self->enrollment_nonce);
+      egismoc_set_print_data (enroll_print->print, enrollment_id);
 
       fpi_byte_writer_init (&writer);
       if (!fpi_byte_writer_put_data (&writer, cmd_new_print_prefix,
@@ -1357,7 +1348,7 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
           fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_PROTO));
           break;
         }
-      if (!fpi_byte_writer_put_data (&writer, (guint8 *) device_print_id,
+      if (!fpi_byte_writer_put_data (&writer, (guint8 *) enrollment_id,
                                      FP_SDCP_ENROLLMENT_ID_SIZE))
         {
           fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_PROTO));
@@ -1409,7 +1400,7 @@ egismoc_identify_check_cb (FpDevice *device,
   FpiSdcpDevice *sdcp_dev = FPI_SDCP_DEVICE (device);
   g_autofree guchar *host_nonce = g_malloc0 (FP_SDCP_NONCE_SIZE); /* always 00s on these devices */
   guchar device_mac[FP_SDCP_DIGEST_SIZE];
-  guchar device_print_id[FP_SDCP_ENROLLMENT_ID_SIZE];
+  guchar enrollment_id[FP_SDCP_ENROLLMENT_ID_SIZE];
   FpPrint *print = NULL;
   FpPrint *verify_print = NULL;
   GPtrArray *prints;
@@ -1437,16 +1428,16 @@ egismoc_identify_check_cb (FpDevice *device,
               buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE,
               FP_SDCP_DIGEST_SIZE);
 
-      memcpy (device_print_id,
+      memcpy (enrollment_id,
               buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE + FP_SDCP_DIGEST_SIZE,
               FP_SDCP_ENROLLMENT_ID_SIZE);
 
       /* 
-        Create a new print from this device_print_id and then see if it matches
+        Create a new print from this enrollment_id and then see if it matches
         the one indicated.
        */
       print = fp_print_new (device);
-      egismoc_set_print_data (print, device_print_id, "");
+      egismoc_set_print_data (print, enrollment_id);
 
       if (!print)
         {
@@ -1459,7 +1450,7 @@ egismoc_identify_check_cb (FpDevice *device,
 
       /* Ensure the returned identity is valid per SDCP. */
       if (!fpi_sdcp_verify_authorized_identity (sdcp_dev, host_nonce,
-                                                device_print_id, device_mac))
+                                                enrollment_id, device_mac))
         {
           fpi_ssm_mark_failed (self->task_ssm,
                                fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
