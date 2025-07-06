@@ -81,8 +81,8 @@ del devices
 # We will need to set a new uptime and realtime in the above claim bytes so that libfprint will not 
 # se the cached claim as "expired". These are both int64 numbers in little endian.
 
-uptime = trunc(time.clock_gettime(time.CLOCK_MONOTONIC_RAW) * 1000000) # g_get_monotonic_time()
-realtime = trunc(time.clock_gettime(time.CLOCK_REALTIME) * 1000000) # g_get_real_time()
+uptime = GLib.get_monotonic_time()
+realtime = GLib.get_real_time()
 uptime_bytes = uptime.to_bytes(8, byteorder = 'little')
 realtime_bytes = realtime.to_bytes(8, byteorder = 'little')
 
