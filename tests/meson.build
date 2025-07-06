@@ -52,9 +52,9 @@ drivers_tests = [
     'nb1010',
     'egis0570',
     'egismoc',
-    'egismoc-05a1',
-    'egismoc-0586',
-    'egismoc-0587',
+#    'egismoc-05a1', # commented out for now -- need new capture for this device!
+#    'egismoc-0586', # commented out for now -- need new capture for this device!
+#    'egismoc-0587', # commented out for now -- need new capture for this device!
     'fpcmoc',
 	'realtek',
 	'realtek-5816',
