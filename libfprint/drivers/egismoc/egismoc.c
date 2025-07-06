@@ -47,6 +47,7 @@ struct _FpiDeviceEgisMoc
   GPtrArray      *enrolled_ids;
   guchar         *enrollment_nonce;
   gint            max_enroll_stages;
+  gint            sensor_read_attempts;
 };
 
 G_DEFINE_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI_TYPE_SDCP_DEVICE);
@@ -348,7 +349,7 @@ egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
                              GError         *error)
 {
   fp_dbg ("Finger on sensor callback");
-  guint *attempts = userdata;
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
 
   g_return_if_fail (transfer->ssm);
   if (error)
@@ -366,13 +367,13 @@ egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
     }
   else
     {
-      if ((*attempts) > EGISMOC_SENSOR_ON_FINGER_READ_ATTEMPTS)
+      if (self->sensor_read_attempts > EGISMOC_FINGER_ON_SENSOR_READ_ATTEMPTS)
         fpi_ssm_mark_failed (transfer->ssm,
                              fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_NOT_FOUND,
                                                        "Finger could not be detected "
                                                        "on sensor."));
       else
-        (*attempts)++;
+        self->sensor_read_attempts++;
     }
 }
 
@@ -382,9 +383,9 @@ egismoc_wait_finger_on_sensor (FpiSsm   *ssm,
 {
   fp_dbg ("Wait for finger on sensor");
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
-  g_autofree guint *attempts = 0;
-
   g_autoptr(FpiUsbTransfer) transfer = fpi_usb_transfer_new (device);
+
+  self->sensor_read_attempts = 0;
 
   fpi_usb_transfer_fill_interrupt (transfer, EGISMOC_EP_CMD_INTERRUPT_IN,
                                    EGISMOC_USB_INTERRUPT_IN_RECV_LENGTH);
@@ -398,7 +399,7 @@ egismoc_wait_finger_on_sensor (FpiSsm   *ssm,
                            EGISMOC_USB_INTERRUPT_TIMEOUT,
                            self->interrupt_cancellable,
                            egismoc_finger_on_sensor_cb,
-                           attempts);
+                           NULL);
 }
 
 static void
