@@ -1470,6 +1470,7 @@ egismoc_identify_check_cb (FpDevice *device,
   g_autofree gchar *enrollment_id_hex = NULL;
   FpPrint *print = NULL;
   FpPrint *verify_print = NULL;
+  g_autofree gchar *verify_print_finger_str = NULL;
   GPtrArray *prints;
   gboolean found = FALSE;
   guint index;
@@ -1532,8 +1533,6 @@ egismoc_identify_check_cb (FpDevice *device,
           return;
         }
 
-      fp_info ("Identify successful for: %s", fp_print_get_description (print));
-
       if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_IDENTIFY)
         {
           fpi_device_get_identify_data (device, &prints);
@@ -1550,7 +1549,11 @@ egismoc_identify_check_cb (FpDevice *device,
       else
         {
           fpi_device_get_verify_data (device, &verify_print);
-          fp_info ("Verifying against: %s", fp_print_get_description (verify_print));
+          verify_print_finger_str = g_enum_to_string (FP_TYPE_FINGER,
+                                                      fp_print_get_finger (verify_print));
+          fp_info ("Verifying print matches %s for user %s",
+                   verify_print_finger_str,
+                   fp_print_get_username (verify_print));
 
           if (fp_print_equal (verify_print, print))
             fpi_device_verify_report (device, FPI_MATCH_SUCCESS, print, NULL);
