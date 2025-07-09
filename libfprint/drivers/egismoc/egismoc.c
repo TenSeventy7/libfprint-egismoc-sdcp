@@ -43,18 +43,19 @@ struct _FpiDeviceEgisMoc
   FpiSsm         *task_ssm;
   FpiSsm         *cmd_ssm;
   FpiUsbTransfer *cmd_transfer;
-  GCancellable   *interrupt_cancellable;
   GPtrArray      *enrolled_ids;
   guchar         *enrollment_nonce;
   gint            max_enroll_stages;
-  gint            sensor_read_attempts;
+  FpiSsm         *wait_finger_ssm;
+  gint64          wait_finger_start;
+  GCancellable   *interrupt_cancellable;
 };
 
 G_DEFINE_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI_TYPE_SDCP_DEVICE);
 
 static const FpIdEntry egismoc_id_table[] = {
   { .vid = 0x1c7a, .pid = 0x0582, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 },
-  { .vid = 0x1c7a, .pid = 0x0583, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 },
+  { .vid = 0x1c7a, .pid = 0x0583, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_15 },
   { .vid = 0x1c7a, .pid = 0x0586, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x0587, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x05a1, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 },
@@ -344,13 +345,30 @@ egismoc_exec_cmd (FpDevice         *device,
 }
 
 static void
+egismoc_wait_finger_ssm_done (FpiSsm   *ssm,
+                              FpDevice *device,
+                              GError   *error)
+{
+  fp_dbg ("Wait for finger SSM done");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+
+  /* wait_finger_ssm is going to be freed by completion of SSM */
+  g_assert (!self->wait_finger_ssm || self->wait_finger_ssm == ssm);
+
+  self->wait_finger_ssm = NULL;
+  self->wait_finger_start = 0;
+
+  if (error)
+    fpi_device_action_error (device, error);
+}
+
+static void
 egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
                              FpDevice       *device,
                              gpointer        userdata,
                              GError         *error)
 {
   fp_dbg ("Finger on sensor callback");
-  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
 
   g_return_if_fail (transfer->ssm);
   if (error)
@@ -368,39 +386,66 @@ egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
     }
   else
     {
-      if (self->sensor_read_attempts > EGISMOC_FINGER_ON_SENSOR_READ_ATTEMPTS)
-        fpi_ssm_mark_failed (transfer->ssm,
-                             fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_NOT_FOUND,
-                                                       "Finger could not be detected "
-                                                       "on sensor."));
-      else
-        self->sensor_read_attempts++;
+      fpi_ssm_jump_to_state (transfer->ssm, WAIT_FINGER_NOT_ON_SENSOR);
     }
 }
 
 static void
-egismoc_wait_finger_on_sensor (FpiSsm   *ssm,
+egismoc_wait_finger_run_state (FpiSsm   *ssm,
                                FpDevice *device)
+{
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  g_autoptr(FpiUsbTransfer) transfer = NULL;
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case WAIT_FINGER_NOT_ON_SENSOR:
+      if (self->wait_finger_start + EGISMOC_FINGER_ON_SENSOR_TIMEOUT_USEC > g_get_monotonic_time ())
+        {
+          fp_dbg ("Wait for finger read attempt at %ld ...", g_get_monotonic_time ()); /* TODO REMOVE THIS! */
+
+          transfer = fpi_usb_transfer_new (device);
+          fpi_usb_transfer_fill_interrupt (transfer, EGISMOC_EP_CMD_INTERRUPT_IN,
+                                           EGISMOC_USB_INTERRUPT_IN_RECV_LENGTH);
+
+          transfer->ssm = ssm;
+          /* Interrupt on this device always returns 1 byte short; this is expected */
+          transfer->short_is_error = FALSE;
+
+          fpi_usb_transfer_submit (g_steal_pointer (&transfer),
+                                  EGISMOC_USB_INTERRUPT_TIMEOUT,
+                                  self->interrupt_cancellable,
+                                  egismoc_finger_on_sensor_cb,
+                                  NULL);
+        }
+      else
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                              "Timed out trying to detect "
+                                                              "finger on sensor"));
+        }
+      break;
+
+    case WAIT_FINGER_ON_SENSOR:
+      fpi_ssm_mark_completed (ssm);
+      fpi_ssm_next_state (self->task_ssm);
+      break;
+    }
+}
+
+static void
+egismoc_wait_finger_on_sensor (FpDevice *device)
 {
   fp_dbg ("Wait for finger on sensor");
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
-  g_autoptr(FpiUsbTransfer) transfer = fpi_usb_transfer_new (device);
 
-  self->sensor_read_attempts = 0;
-
-  fpi_usb_transfer_fill_interrupt (transfer, EGISMOC_EP_CMD_INTERRUPT_IN,
-                                   EGISMOC_USB_INTERRUPT_IN_RECV_LENGTH);
-  transfer->ssm = ssm;
-  /* Interrupt on this device always returns 1 byte short; this is expected */
-  transfer->short_is_error = FALSE;
+  self->wait_finger_start = g_get_monotonic_time ();
 
   fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
 
-  fpi_usb_transfer_submit (g_steal_pointer (&transfer),
-                           EGISMOC_USB_INTERRUPT_TIMEOUT,
-                           self->interrupt_cancellable,
-                           egismoc_finger_on_sensor_cb,
-                           NULL);
+  g_assert (self->wait_finger_ssm == NULL);
+  self->wait_finger_ssm = fpi_ssm_new (device, egismoc_wait_finger_run_state, WAIT_FINGER_STATES);
+  fpi_ssm_start (self->wait_finger_ssm, egismoc_wait_finger_ssm_done);
 }
 
 static void
@@ -473,7 +518,7 @@ egismoc_sdcp_connect_cb (FpDevice *device,
       fpi_ssm_mark_failed (self->task_ssm,
                           fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                     "Device responded with failure "
-                                                    "instead of SDCP ConnectResponse."));
+                                                    "instead of SDCP ConnectResponse"));
       return;
     }
 
@@ -489,7 +534,7 @@ egismoc_sdcp_connect_cb (FpDevice *device,
       fpi_ssm_mark_failed (self->task_ssm,
                           fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                     "Device SDCP ConnectResponse "
-                                                    "was not long enough."));
+                                                    "was not long enough"));
       return;
     }
 
@@ -543,7 +588,7 @@ egismoc_sdcp_connect_cb (FpDevice *device,
     fpi_ssm_mark_failed (self->task_ssm,
                          fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                    "Secure connection could "
-                                                   "not be established."));
+                                                   "not be established"));
   else
     fpi_ssm_next_state (self->task_ssm);
 }
@@ -846,7 +891,7 @@ egismoc_delete_cb (FpDevice *device,
         {
           fpi_ssm_mark_failed (self->task_ssm,
                                fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                         "Unsupported delete action."));
+                                                         "Unsupported delete action"));
         }
     }
   else
@@ -861,8 +906,10 @@ static void
 egismoc_delete_run_state (FpiSsm   *ssm,
                           FpDevice *device)
 {
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
   g_autofree guchar *payload = NULL;
   gsize payload_length = 0;
+  GError *error = NULL;
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
@@ -874,10 +921,24 @@ egismoc_delete_run_state (FpiSsm   *ssm,
 
     case DELETE_DELETE:
       if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_DELETE)
-        payload = egismoc_get_delete_cmd (device, fpi_ssm_get_data (ssm),
-                                          &payload_length);
+        {
+          payload = egismoc_get_delete_cmd (device, fpi_ssm_get_data (ssm),
+                                            &payload_length);
+        }
       else
-        payload = egismoc_get_delete_cmd (device, NULL, &payload_length);
+        {
+          if (self->enrolled_ids->len == 0)
+            {
+              error = fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_NOT_FOUND,
+                                                "Clear attempted when there are no prints "
+                                                "currently stored on the device");
+              fpi_device_delete_complete (device, error);
+              fpi_ssm_mark_failed (self->task_ssm, error);
+              return;
+            }
+
+          payload = egismoc_get_delete_cmd (device, NULL, &payload_length);
+        }
 
       egismoc_exec_cmd (device, g_steal_pointer (&payload), payload_length,
                         g_free, egismoc_delete_cb);
@@ -941,7 +1002,7 @@ egismoc_commit_cb (FpDevice *device,
       fpi_ssm_mark_failed (self->task_ssm, 
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                      "Enrollment was rejected "
-                                                     "by the device."));
+                                                     "by the device"));
       return;
     }
 
@@ -1073,7 +1134,7 @@ egismoc_enroll_starting_cb (FpDevice *device,
       fpi_ssm_mark_failed (self->task_ssm, 
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Invalid response when "
-                                                     "starting enrollment."));
+                                                     "starting enrollment"));
       return;
     }
 
@@ -1291,7 +1352,7 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
       break;
 
     case ENROLL_WAIT_FINGER:
-      egismoc_wait_finger_on_sensor (ssm, device);
+      egismoc_wait_finger_on_sensor (device);
       break;
 
     case ENROLL_SENSOR_CHECK:
@@ -1322,7 +1383,7 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
       break;
 
     case ENROLL_CAPTURE_WAIT_FINGER:
-      egismoc_wait_finger_on_sensor (ssm, device);
+      egismoc_wait_finger_on_sensor (device);
       break;
 
     case ENROLL_CAPTURE_POST_WAIT_FINGER:
@@ -1456,7 +1517,7 @@ egismoc_identify_check_cb (FpDevice *device,
           fpi_ssm_mark_failed (self->task_ssm,
                                fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                          "Failed to build a print from "
-                                                         "device response."));
+                                                         "device response"));
           return;
         }
 
@@ -1467,7 +1528,7 @@ egismoc_identify_check_cb (FpDevice *device,
           fpi_ssm_mark_failed (self->task_ssm,
                                fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                          "Device SDCP Identify "
-                                                         "response was not valid."));
+                                                         "response was not valid"));
           return;
         }
 
@@ -1514,7 +1575,7 @@ egismoc_identify_check_cb (FpDevice *device,
     {
       fpi_ssm_mark_failed (self->task_ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                     "Unrecognized response from device."));
+                                                     "Unrecognized response from device"));
       return;
     }
 
@@ -1572,7 +1633,7 @@ egismoc_identify_run_state (FpiSsm   *ssm,
       break;
 
     case IDENTIFY_WAIT_FINGER:
-      egismoc_wait_finger_on_sensor (ssm, device);
+      egismoc_wait_finger_on_sensor (device);
       break;
 
     case IDENTIFY_SENSOR_CHECK:
@@ -1650,7 +1711,7 @@ egismoc_fw_version_cb (FpDevice *device,
       fpi_ssm_mark_failed (self->task_ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Device firmware response "
-                                                     "was not valid."));
+                                                     "was not valid"));
       return;
     }
 
