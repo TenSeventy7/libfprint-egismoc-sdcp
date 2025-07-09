@@ -655,7 +655,7 @@ sdcp_is_claim_expired (FpiSdcpDevice *device)
   if (priv->claim_expiration_seconds < 0)
     return FALSE;
 
-  expires_at = priv->connected_uptime + (priv->claim_expiration_seconds * G_USEC_PER_SEC);
+  expires_at = priv->connected_uptime + ((gint64) priv->claim_expiration_seconds * G_USEC_PER_SEC);
 
   if (expires_at < g_get_monotonic_time ())
     {
