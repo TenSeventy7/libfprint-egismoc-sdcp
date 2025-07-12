@@ -20,7 +20,7 @@
 #include <glib.h>
 
 #include "fpi-device.h"
-#include "fpi-sdcp-device.h"
+#include "fpi-sdcp-device-private.h"
 
 G_BEGIN_DECLS
 

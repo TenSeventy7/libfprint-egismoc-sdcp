@@ -216,6 +216,26 @@ fpi_image_device_set_bz3_threshold
 </SECTION>
 
 <SECTION>
+<FILE>fpi-sdcp-device</FILE>
+<TITLE>Internal FpiSdcpDevice</TITLE>
+FpiSdcpDeviceClass
+FpiSdcpConnectResponse
+fpi_sdcp_get_host_public_key
+fpi_sdcp_get_host_random
+fpi_sdcp_derive_keys_and_verify_connect
+fpi_sdcp_derive_keys_and_verify_connect_buf
+fpi_sdcp_derive_keys_and_verify_connect_ex
+fpi_sdcp_device_is_connected
+fpi_sdcp_device_can_reconnect
+fpi_sdcp_verify_reconnect
+fpi_sdcp_verify_authorized_identity
+fpi_sdcp_generate_random
+fpi_sdcp_generate_enrollment_id
+fpi_sdcp_get_cert_length_from_buf
+fpi_sdcp_connect_response_free
+</SECTION>
+
+<SECTION>
 <FILE>fpi-log</FILE>
 fp_dbg
 fp_info

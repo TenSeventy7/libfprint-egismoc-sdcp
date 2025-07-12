@@ -460,7 +460,7 @@ egismoc_set_print_data (FpPrint      *print,
 
   enrollment_id_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                                  enrollment_id,
-                                                 FP_SDCP_ENROLLMENT_ID_SIZE,
+                                                 SDCP_ENROLLMENT_ID_SIZE,
                                                  sizeof (guchar));
   fpi_data = g_variant_new ("(@ay)", enrollment_id_var);
   g_object_set (print, "fpi-data", fpi_data, NULL);
@@ -523,13 +523,13 @@ egismoc_sdcp_connect_cb (FpDevice *device,
     }
 
   /* buf len should be at least larger than all required parts (plus a cert) */
-  if (length_in <= FP_SDCP_RANDOM_SIZE
-                   + FP_SDCP_PUBLIC_KEY_SIZE
-                   + FP_SDCP_PUBLIC_KEY_SIZE
-                   + FP_SDCP_DIGEST_SIZE
-                   + FP_SDCP_SIGNATURE_SIZE
-                   + FP_SDCP_SIGNATURE_SIZE
-                   + FP_SDCP_DIGEST_SIZE)
+  if (length_in <= SDCP_RANDOM_SIZE
+                   + SDCP_PUBLIC_KEY_SIZE
+                   + SDCP_PUBLIC_KEY_SIZE
+                   + SDCP_DIGEST_SIZE
+                   + SDCP_SIGNATURE_SIZE
+                   + SDCP_SIGNATURE_SIZE
+                   + SDCP_DIGEST_SIZE)
     {
       fpi_ssm_mark_failed (self->task_ssm,
                           fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
@@ -547,8 +547,8 @@ egismoc_sdcp_connect_cb (FpDevice *device,
   response = g_new0 (FpiSdcpConnectResponse, 1);
 
   /* r_d */
-  memcpy (response->device_random, buffer_in + pos, FP_SDCP_RANDOM_SIZE);
-  pos += FP_SDCP_RANDOM_SIZE;
+  memcpy (response->device_random, buffer_in + pos, SDCP_RANDOM_SIZE);
+  pos += SDCP_RANDOM_SIZE;
 
   /* next two bytes are an unsigned short giving the cert_m length */
   response->model_certificate_len = buffer_in[pos] << 8 | buffer_in[pos + 1];
@@ -560,28 +560,28 @@ egismoc_sdcp_connect_cb (FpDevice *device,
   pos += response->model_certificate_len;
 
   /* pk_d */
-  memcpy (response->device_public_key, buffer_in + pos, FP_SDCP_PUBLIC_KEY_SIZE);
-  pos += FP_SDCP_PUBLIC_KEY_SIZE;
+  memcpy (response->device_public_key, buffer_in + pos, SDCP_PUBLIC_KEY_SIZE);
+  pos += SDCP_PUBLIC_KEY_SIZE;
 
   /* pk_f */
-  memcpy (response->firmware_public_key, buffer_in + pos, FP_SDCP_PUBLIC_KEY_SIZE);
-  pos += FP_SDCP_PUBLIC_KEY_SIZE;
+  memcpy (response->firmware_public_key, buffer_in + pos, SDCP_PUBLIC_KEY_SIZE);
+  pos += SDCP_PUBLIC_KEY_SIZE;
 
   /* h_f */
-  memcpy (response->firmware_hash, buffer_in + pos, FP_SDCP_DIGEST_SIZE);
-  pos += FP_SDCP_DIGEST_SIZE;
+  memcpy (response->firmware_hash, buffer_in + pos, SDCP_DIGEST_SIZE);
+  pos += SDCP_DIGEST_SIZE;
 
   /* s_m */
-  memcpy (response->model_signature, buffer_in + pos, FP_SDCP_SIGNATURE_SIZE);
-  pos += FP_SDCP_SIGNATURE_SIZE;
+  memcpy (response->model_signature, buffer_in + pos, SDCP_SIGNATURE_SIZE);
+  pos += SDCP_SIGNATURE_SIZE;
 
   /* s_d */
-  memcpy (response->device_signature, buffer_in + pos, FP_SDCP_SIGNATURE_SIZE);
-  pos += FP_SDCP_SIGNATURE_SIZE;
+  memcpy (response->device_signature, buffer_in + pos, SDCP_SIGNATURE_SIZE);
+  pos += SDCP_SIGNATURE_SIZE;
 
   /* m */
-  memcpy (response->mac, buffer_in + pos, FP_SDCP_DIGEST_SIZE);
-  pos += FP_SDCP_DIGEST_SIZE;
+  memcpy (response->mac, buffer_in + pos, SDCP_DIGEST_SIZE);
+  pos += SDCP_DIGEST_SIZE;
 
   /* Derive SDCP keys and establish secured connection */
   if (!fpi_sdcp_derive_keys_and_verify_connect (sdcp, response))
@@ -609,8 +609,8 @@ egismoc_get_sdcp_connect_cmd (FpDevice *device,
   gboolean written = TRUE;
 
   const int length = cmd_sdcp_connect_prefix_len
-                     + FP_SDCP_RANDOM_SIZE
-                     + FP_SDCP_PUBLIC_KEY_SIZE
+                     + SDCP_RANDOM_SIZE
+                     + SDCP_PUBLIC_KEY_SIZE
                      + cmd_sdcp_connect_suffix_len;
 
   host_random = fpi_sdcp_get_host_random (sdcp);
@@ -623,10 +623,10 @@ egismoc_get_sdcp_connect_cmd (FpDevice *device,
                                        cmd_sdcp_connect_prefix_len);
 
   written &= fpi_byte_writer_put_data (&writer, host_random,
-                                       FP_SDCP_RANDOM_SIZE);
+                                       SDCP_RANDOM_SIZE);
 
   written &= fpi_byte_writer_put_data (&writer, host_public_key,
-                                       FP_SDCP_PUBLIC_KEY_SIZE);
+                                       SDCP_PUBLIC_KEY_SIZE);
 
   written &= fpi_byte_writer_put_data (&writer, cmd_sdcp_connect_suffix,
                                        cmd_sdcp_connect_suffix_len);
@@ -674,14 +674,13 @@ egismoc_list_fill_enrolled_ids_cb (FpDevice *device,
    */
   while (read)
     {
-      read &= fpi_byte_reader_get_data (&reader, FP_SDCP_ENROLLMENT_ID_SIZE,
-                                        &data);
+      read &= fpi_byte_reader_get_data (&reader, SDCP_ENROLLMENT_ID_SIZE, &data);
       if (!read)
         break;
 
-      enrollment_id = g_malloc0 (FP_SDCP_ENROLLMENT_ID_SIZE);
-      memcpy (enrollment_id, data, FP_SDCP_ENROLLMENT_ID_SIZE);
-      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, FP_SDCP_ENROLLMENT_ID_SIZE);
+      enrollment_id = g_malloc0 (SDCP_ENROLLMENT_ID_SIZE);
+      memcpy (enrollment_id, data, SDCP_ENROLLMENT_ID_SIZE);
+      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, SDCP_ENROLLMENT_ID_SIZE);
 
       fp_dbg ("Device enrollment ID %0d: %s", self->enrolled_ids->len + 1, enrollment_id_hex);
 
@@ -767,11 +766,9 @@ egismoc_get_delete_cmd (FpDevice *device,
   else if (self->enrolled_ids)
     num_to_delete = self->enrolled_ids->len;
 
-  const gsize body_length = sizeof (guchar) * FP_SDCP_ENROLLMENT_ID_SIZE *
-                            num_to_delete;
+  const gsize body_length = sizeof (guchar) * SDCP_ENROLLMENT_ID_SIZE * num_to_delete;
   /* total_length is the 6 various bytes plus prefix and body payload */
-  const gsize total_length = (sizeof (guchar) * 6) + cmd_delete_prefix_len +
-                             body_length;
+  const gsize total_length = (sizeof (guchar) * 6) + cmd_delete_prefix_len + body_length;
 
   /* pre-fill entire payload with 00s */
   fpi_byte_writer_init_with_size (&writer, total_length, TRUE);
@@ -831,11 +828,10 @@ egismoc_get_delete_cmd (FpDevice *device,
       enrollment_id = g_variant_get_fixed_array (enrollment_id_var,
                                                  &enrollment_id_len, sizeof (guchar));
 
-      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, FP_SDCP_ENROLLMENT_ID_SIZE);
+      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, SDCP_ENROLLMENT_ID_SIZE);
       fp_info ("Delete enrollment ID %s", enrollment_id_hex);
 
-      written &= fpi_byte_writer_put_data (&writer, enrollment_id,
-                                           FP_SDCP_ENROLLMENT_ID_SIZE);
+      written &= fpi_byte_writer_put_data (&writer, enrollment_id, SDCP_ENROLLMENT_ID_SIZE);
     }
   /* Otherwise assume this is a "clear" - just loop through and append all enrolled IDs */
   else if (self->enrolled_ids)
@@ -844,7 +840,7 @@ egismoc_get_delete_cmd (FpDevice *device,
         {
           written &= fpi_byte_writer_put_data (&writer,
                                                g_ptr_array_index (self->enrolled_ids, i),
-                                               FP_SDCP_ENROLLMENT_ID_SIZE);
+                                               SDCP_ENROLLMENT_ID_SIZE);
         }
     }
 
@@ -1140,12 +1136,12 @@ egismoc_enroll_starting_cb (FpDevice *device,
 
   /* clear and fetch SDCP device enrollment nonce from response */
   g_clear_pointer (&self->enrollment_nonce, g_free);
-  self->enrollment_nonce = g_malloc0 (FP_SDCP_NONCE_SIZE);
+  self->enrollment_nonce = g_malloc0 (SDCP_NONCE_SIZE);
   memcpy (self->enrollment_nonce,
           buffer_in + EGISMOC_ENROLL_STARTING_RESPONSE_PREFIX_SIZE,
-          FP_SDCP_NONCE_SIZE);
+          SDCP_NONCE_SIZE);
 
-  enrollment_nonce_hex = OPENSSL_buf2hexstr (self->enrollment_nonce, FP_SDCP_NONCE_SIZE);
+  enrollment_nonce_hex = OPENSSL_buf2hexstr (self->enrollment_nonce, SDCP_NONCE_SIZE);
   fp_dbg ("Device-provided enrollment nonce: %s", enrollment_nonce_hex);
 
   fpi_ssm_next_state (self->task_ssm);
@@ -1209,8 +1205,7 @@ egismoc_get_check_cmd (FpDevice *device,
    */
 
   g_assert (self->enrolled_ids);
-  const gsize body_length = sizeof (guchar) * self->enrolled_ids->len *
-                            FP_SDCP_ENROLLMENT_ID_SIZE;
+  const gsize body_length = sizeof (guchar) * self->enrolled_ids->len * SDCP_ENROLLMENT_ID_SIZE;
 
   /* prefix length can depend on the type */
   const gsize check_prefix_length = (fpi_device_get_driver_data (device) &
@@ -1222,7 +1217,7 @@ egismoc_get_check_cmd (FpDevice *device,
    * the body payload */
   const gsize total_length = (sizeof (guchar) * 6)
                              + check_prefix_length
-                             + FP_SDCP_NONCE_SIZE
+                             + SDCP_NONCE_SIZE
                              + body_length
                              + cmd_check_suffix_len;
 
@@ -1277,14 +1272,14 @@ egismoc_get_check_cmd (FpDevice *device,
     }
 
   /* skip ahead to leave Identify nonce as 00s (always 00s for egismoc devices) */
-  written &= fpi_byte_writer_change_pos (&writer, FP_SDCP_NONCE_SIZE);
+  written &= fpi_byte_writer_change_pos (&writer, SDCP_NONCE_SIZE);
 
   /* add each of the enrolled IDs */
   for (guint i = 0; i < self->enrolled_ids->len && written; i++)
     {
       written &= fpi_byte_writer_put_data (&writer,
                                            g_ptr_array_index (self->enrolled_ids, i),
-                                           FP_SDCP_ENROLLMENT_ID_SIZE);
+                                           SDCP_ENROLLMENT_ID_SIZE);
     }
 
   /* command suffix */
@@ -1413,8 +1408,7 @@ egismoc_enroll_run_state (FpiSsm   *ssm,
           fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_PROTO));
           break;
         }
-      if (!fpi_byte_writer_put_data (&writer, (guint8 *) enrollment_id,
-                                     FP_SDCP_ENROLLMENT_ID_SIZE))
+      if (!fpi_byte_writer_put_data (&writer, (guint8 *) enrollment_id, SDCP_ENROLLMENT_ID_SIZE))
         {
           fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_PROTO));
           break;
@@ -1463,10 +1457,10 @@ egismoc_identify_check_cb (FpDevice *device,
   fp_dbg ("Identify check callback");
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
   FpiSdcpDevice *sdcp_dev = FPI_SDCP_DEVICE (device);
-  g_autofree guchar *host_nonce = g_malloc0 (FP_SDCP_NONCE_SIZE); /* always 00s on these devices */
-  guchar device_mac[FP_SDCP_DIGEST_SIZE];
+  g_autofree guchar *host_nonce = g_malloc0 (SDCP_NONCE_SIZE); /* always 00s on these devices */
+  guchar device_mac[SDCP_DIGEST_SIZE];
   g_autofree gchar *device_mac_hex = NULL;
-  guchar enrollment_id[FP_SDCP_ENROLLMENT_ID_SIZE];
+  guchar enrollment_id[SDCP_ENROLLMENT_ID_SIZE];
   g_autofree gchar *enrollment_id_hex = NULL;
   FpPrint *print = NULL;
   FpPrint *verify_print = NULL;
@@ -1494,14 +1488,14 @@ egismoc_identify_check_cb (FpDevice *device,
        */
       memcpy (device_mac,
               buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE,
-              FP_SDCP_DIGEST_SIZE);
+              SDCP_DIGEST_SIZE);
 
       memcpy (enrollment_id,
-              buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE + FP_SDCP_DIGEST_SIZE,
-              FP_SDCP_ENROLLMENT_ID_SIZE);
+              buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE + SDCP_DIGEST_SIZE,
+              SDCP_ENROLLMENT_ID_SIZE);
 
-      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, FP_SDCP_DIGEST_SIZE);
-      device_mac_hex = OPENSSL_buf2hexstr (device_mac, FP_SDCP_DIGEST_SIZE);
+      enrollment_id_hex = OPENSSL_buf2hexstr (enrollment_id, SDCP_DIGEST_SIZE);
+      device_mac_hex = OPENSSL_buf2hexstr (device_mac, SDCP_DIGEST_SIZE);
 
       fp_dbg ("Enrollment ID identified by the device: %s", enrollment_id_hex);
       fp_dbg ("AuthorizedIdentity MAC: %s", device_mac_hex);

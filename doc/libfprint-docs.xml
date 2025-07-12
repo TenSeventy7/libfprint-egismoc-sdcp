@@ -38,6 +38,7 @@
       <title>Device methods for drivers</title>
       <xi:include href="xml/fpi-device.xml"/>
       <xi:include href="xml/fpi-image-device.xml"/>
+      <xi:include href="xml/fpi-sdcp-device.xml"/>
     </chapter>
 
     <chapter id="driver-helpers">

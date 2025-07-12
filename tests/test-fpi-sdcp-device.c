@@ -247,16 +247,16 @@ sdcp_test_generate_enrollment_id (void)
 
   enrollment_id = fpi_sdcp_generate_enrollment_id (sdcp_dev, TEST_ENROLLMENT_NONCE);
 
-  hex = OPENSSL_buf2hexstr (TEST_ENROLLMENT_ENROLLMENT_ID, FP_SDCP_ENROLLMENT_ID_SIZE);
+  hex = OPENSSL_buf2hexstr (TEST_ENROLLMENT_ENROLLMENT_ID, SDCP_ENROLLMENT_ID_SIZE);
   fp_dbg ("Expected enrollment_id:\n%s", hex);
   g_free (hex);
 
-  hex = OPENSSL_buf2hexstr (enrollment_id, FP_SDCP_ENROLLMENT_ID_SIZE);
+  hex = OPENSSL_buf2hexstr (enrollment_id, SDCP_ENROLLMENT_ID_SIZE);
   fp_dbg ("Actual enrollment_id:\n%s", hex);
   g_free (hex);
 
-  g_assert_cmpmem (enrollment_id, FP_SDCP_ENROLLMENT_ID_SIZE,
-    TEST_ENROLLMENT_ENROLLMENT_ID, FP_SDCP_ENROLLMENT_ID_SIZE);
+  g_assert_cmpmem (enrollment_id, SDCP_ENROLLMENT_ID_SIZE,
+    TEST_ENROLLMENT_ENROLLMENT_ID, SDCP_ENROLLMENT_ID_SIZE);
 
   /* clean up cached claim after last test */
   fpi_sdcp_device_delete_cached_claim (sdcp_dev);
@@ -268,12 +268,12 @@ static void
 sdcp_test_generate_random (void)
 {
   g_autofree guchar *random = fpi_sdcp_generate_random ();
-  g_autofree guchar *random_zeroes = g_malloc0 (FP_SDCP_RANDOM_SIZE);
-  g_autofree gchar *hex = OPENSSL_buf2hexstr (random, FP_SDCP_RANDOM_SIZE);
+  g_autofree guchar *random_zeroes = g_malloc0 (SDCP_RANDOM_SIZE);
+  g_autofree gchar *hex = OPENSSL_buf2hexstr (random, SDCP_RANDOM_SIZE);
 
   fp_dbg ("Generated random:\n%s", hex);
 
-  g_assert (memcmp (random, random_zeroes, FP_SDCP_RANDOM_SIZE) != 0);
+  g_assert (memcmp (random, random_zeroes, SDCP_RANDOM_SIZE) != 0);
 }
 
 static void
@@ -471,15 +471,15 @@ sdcp_test_get_host_random (void)
 
   random = fpi_sdcp_get_host_random (sdcp_dev);
 
-  hex = OPENSSL_buf2hexstr (TEST_HOST_RANDOM, FP_SDCP_RANDOM_SIZE);
+  hex = OPENSSL_buf2hexstr (TEST_HOST_RANDOM, SDCP_RANDOM_SIZE);
   fp_dbg ("Expected random:\n%s", hex);
   g_free (hex);
 
-  hex = OPENSSL_buf2hexstr (random, FP_SDCP_RANDOM_SIZE);
+  hex = OPENSSL_buf2hexstr (random, SDCP_RANDOM_SIZE);
   fp_dbg ("Actual random:\n%s", hex);
   g_free (hex);
 
-  g_assert_cmpmem (TEST_HOST_RANDOM, FP_SDCP_RANDOM_SIZE, random, FP_SDCP_RANDOM_SIZE);
+  g_assert_cmpmem (TEST_HOST_RANDOM, SDCP_RANDOM_SIZE, random, SDCP_RANDOM_SIZE);
 
   fp_device_close_sync (device, NULL, NULL);
 }
@@ -499,16 +499,16 @@ sdcp_test_get_host_public_key (void)
 
   public_key = fpi_sdcp_get_host_public_key (sdcp_dev);
 
-  hex = OPENSSL_buf2hexstr (TEST_HOST_PUBLIC_KEY, FP_SDCP_PUBLIC_KEY_SIZE);
+  hex = OPENSSL_buf2hexstr (TEST_HOST_PUBLIC_KEY, SDCP_PUBLIC_KEY_SIZE);
   fp_dbg ("Expected public_key:\n%s", hex);
   g_free (hex);
 
-  hex = OPENSSL_buf2hexstr (public_key, FP_SDCP_PUBLIC_KEY_SIZE);
+  hex = OPENSSL_buf2hexstr (public_key, SDCP_PUBLIC_KEY_SIZE);
   fp_dbg ("Actual public_key:\n%s", hex);
   g_free (hex);
   
-  g_assert_cmpmem (TEST_HOST_PUBLIC_KEY, FP_SDCP_PUBLIC_KEY_SIZE,
-    public_key, FP_SDCP_PUBLIC_KEY_SIZE);
+  g_assert_cmpmem (TEST_HOST_PUBLIC_KEY, SDCP_PUBLIC_KEY_SIZE,
+    public_key, SDCP_PUBLIC_KEY_SIZE);
 
   fp_device_close_sync (device, NULL, NULL);
 }

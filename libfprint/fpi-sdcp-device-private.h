@@ -26,14 +26,14 @@
 typedef struct
 {
   EVP_PKEY *host_key;
-  guchar host_private_key[FP_SDCP_PRIVATE_KEY_SIZE];
-  guchar host_public_key[FP_SDCP_PUBLIC_KEY_SIZE];
-  guchar host_random[FP_SDCP_RANDOM_SIZE];
+  guchar host_private_key[SDCP_PRIVATE_KEY_SIZE];
+  guchar host_public_key[SDCP_PUBLIC_KEY_SIZE];
+  guchar host_random[SDCP_RANDOM_SIZE];
 
-  guchar key_agreement[FP_SDCP_KEY_AGREEMENT_SIZE];
-  guchar master_secret[FP_SDCP_MASTER_SECRET_SIZE];
-  guchar application_secret[FP_SDCP_APPLICATION_SECRET_SIZE];
-  guchar application_symmetric_key[FP_SDCP_APPLICATION_SYMMETRIC_KEY_SIZE];
+  guchar key_agreement[SDCP_KEY_AGREEMENT_SIZE];
+  guchar master_secret[SDCP_MASTER_SECRET_SIZE];
+  guchar application_secret[SDCP_APPLICATION_SECRET_SIZE];
+  guchar application_symmetric_key[SDCP_APPLICATION_SYMMETRIC_KEY_SIZE];
 
   gboolean is_connected;
   gint64 connected_uptime;
@@ -43,3 +43,9 @@ typedef struct
   gchar *claim_storage_path;
   gint32 claim_expiration_seconds;
 } FpiSdcpDevicePrivate;
+
+gboolean fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
+                                 const guchar  *host_private_key_bytes,
+                                 const guchar  *host_random);
+
+void fpi_sdcp_device_delete_cached_claim (FpiSdcpDevice *self);

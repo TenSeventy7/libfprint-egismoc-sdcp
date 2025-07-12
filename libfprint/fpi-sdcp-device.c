@@ -32,86 +32,110 @@
 
 /**
  * SECTION: fpi-sdcp-device
- * @title: FpiSdcpDevice
- * @short_description: SDCP supported device
+ * @title: Internal FpiSdcpDevice
+ * @short_description: Internal FpDevice with support for Microsoft's Secure
+ *   Device Connection Protocol (SDCP)
  *
- * This is a base internal class for devices implementing Microsoft's Secure Device Connection
- * Protocol (SDCP). This is an internal-only device type which provides a thin wrapper over
- * FpiDevice and some additional helper functions for building the various payloads that are
- * required when interacting with devices that require SDCP. This SDCP implementation is internal
- * to libfprint drivers; externally, the device will look and behave like a normal FpDevice.
+ * This is a base internal class for devices implementing Microsoft's <ulink
+ * url="https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol">
+ * Secure Device Connection Protocol (SDCP)</ulink>. This is an internal-only
+ * device type, providing just a thin wrapper over the normal #FpDevice type as
+ * well as some additional helper functions for building the various payloads
+ * that are required when interacting with devices that require SDCP.
  *
- * See Microsoft's documentation for more details about the protocol itself:
- * https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol
+ * This API is solely intended for drivers. It is purely internal and neither
+ * API nor ABI stable. Externally, the device will look and behave just like any
+ * other normal #FpDevice.
  *
- * Developers wishing to use this driver type will need to keep the following things in mind:
+ * Developers wishing to use this driver type will need to adhere to the
+ * following guidance:
  *
- * - Driver implementations should inheret the FPI_TYPE_SDCP_DEVICE type, but will otherwise utilize
- *   all of the normal fpi_device_* functions which are used for any other FpDevice device--
- *   again, externally, these devices will look and behave like any other FpDevice.
+ * - Driver implementations should inherit the `FPI_TYPE_SDCP_DEVICE` type, but
+ *   will otherwise need to implement the desired entry points of a standard
+ *   #FpDevice and utilize all of the normal `fpi_device_*` functions like would
+ *   be done with any other #FpDevice.
  *
- * - Prior to performing any ENROLL, VERIFY, or IDENTIFY actions, the driver will need to send a
- *   Connect command to the device and then perform a verification of the ConnectResponse.
+ * - Some additional SDCP-specific configuration properties are also available
+ *   and can be set in the #FpiSdcpDeviceClass used by each driver.
  *
- * - The format of the Connect command (as with any other commands sent to the USB device) will be a
- *   vendor-specific implementation, but it will need to include the host_public_key and host_random
- *   generated from the FpiSdcpDevice as part of the payload.
- *   - host_public_key should be fetched using the function fpi_sdcp_get_host_public_key()
- *   - host_random should be fetched using the function fpi_sdcp_get_host_random()
- *   - These functions will take care of intializing the internal host keys as necessary; driver
- *     developers do not need to worry about this part.
+ * - Prior to performing any enroll, verify, or identify actions, the driver
+ *   will need to send a `Connect` command to the device and then perform a
+ *   verification of the `ConnectResponse`.
  *
- * - The ConnectResponse received back from the device should then be verified using the function
- *   fpi_sdcp_derive_keys_and_verify_connect() or one of its variants. This function will handle
- *   deriving all of the internal key exchanges and secrets needed for generating and validating all
- *   other SDCP-related payloads. Depending on the vendor implementation, it might be necessary for
- *   the driver to implement parsing logic to extract and provide all of the individual fields of
- *   the ConnectResponse to this verify function.
+ * - The format of the `Connect` command (as with any other commands sent to the
+ *   USB device) will be a device- and vendor-specific implementation, but it
+ *   will need to include the `host_public_key` and `host_random` generated from
+ *   the #FpiSdcpDevice as part of the payload.
+ *   - `host_public_key` should be fetched using the function
+ *     fpi_sdcp_get_host_public_key()
+ *   - `host_random` should be fetched using the function
+ *     fpi_sdcp_get_host_random()
+ *   - These functions will take care of intializing the internal host keys
+ *     whenever necessary; driver developers do not need to worry about this
  *
- * - The driver can check if the connection is already established prior to connecting by using the
- *   function fpi_sdcp_device_is_connected().
+ * - The `ConnectResponse` received back from the device should then be verified
+ *   using the function fpi_sdcp_derive_keys_and_verify_connect() or one of its
+ *   variants. This function will handle deriving all of the internal key
+ *   exchanges and secrets needed for generating and validating all other
+ *   SDCP-related payloads. Depending on the vendor implementation, it might be
+ *   necessary for the driver to implement parsing logic to extract and provide
+ *   all of the individual fields of the `ConnectResponse` to this function.
  *
- * - Reconnect commands can also be sent to the device by providing a new reconnect_random, which
- *   can be generated with the help of function fpi_sdcp_generate_random(). Support and even need
- *   for using this command seems to vary widely by vendor and specific implementation. Also keep in
- *   mind that performing a Reconnect and the subsequent verification of the ReconnectResponse with
- *   fpi_sdcp_verify_reconnect() will not have any impact on the internal keys and secrets used, but
- *   might be required in cases where the device would otherwise begin to reject payloads from the
- *   driver.
+ * - The driver can check if the connection is already established prior to
+ *   connecting by using the function fpi_sdcp_device_is_connected().
  *
- * - According to the SDCP specification, it should be possible to initiate and verify a new Connect
- *   at any time, which would then generate new internal keys and secrets, but support for this
- *   might also vary by specifc vendor and device implementation.
+ * - `Reconnect` commands can also be sent to the device by providing a new
+ *   `reconnect_random`, which can be generated by fpi_sdcp_generate_random().
+ *   Support and even need for using this command seems to vary widely by vendor
+ *   and specific implementation. Also keep in mind that performing a
+ *   `Reconnect` and the subsequent verification of the `ReconnectResponse` with
+ *   fpi_sdcp_verify_reconnect() will not have any impact on the internal keys
+ *   and secrets used, but might be required in cases where the device would
+ *   otherwise begin to reject payloads from the driver.
  *
- * - New enrollment IDs should be generated using the function fpi_sdcp_generate_enrollment_id() and
- *   sent to the device as part of the vendor- and device-specific Enroll command implementation.
- *   Upon successful enrollment, this enrollment_id should be saved with the FpPrint's data so that
- *   subsequent actions can be matched to the correct print using this identifier. Refer to the SDCP
- *   specification and your own device's implementation requirements for more information on the
- *   exact sequence of events that should be implemented for the Enrollment process.
+ * - According to the SDCP specification, it should be possible to initiate and
+ *   verify a new `Connect` at any time, which would then generate new internal
+ *   keys and secrets, but support for this might also vary by specifc vendor
+ *   and device implementation.
  *
- * - Identify commands sent to the device are expected to include an identify_nonce, which
- *   can be generated with the help of function fpi_sdcp_generate_random(). On success, the device
- *   should respond using SDCP's AuthorizedIdentity format, which includes the enrollment_id of the
- *   identified match as well as a security digest. This response can be verified using the function
- *   fpi_sdcp_verify_authorized_identity(), but support for correctly generating the digest may
- *   vary by device and vendor implementation; the important thing is that the matched enrollment_id
+ * - New Enrollment IDs should be generated using the function
+ *   fpi_sdcp_generate_enrollment_id() and sent to the device as part of the
+ *   vendor- and device-specific `Enroll` command implementation. Upon
+ *   successful enrollment, this `enrollment_id` should be saved with the
+ *   #FpPrint's data so that subsequent actions can be matched to the correct
+ *   print using this identifier. Refer to the SDCP specification and your own
+ *   device's implementation requirements for more information on the exact
+ *   sequence of events that should be implemented for the enrollment process.
+ *
+ * - `Identify` commands sent to the device are expected to include an
+ *   `identify_nonce`, which can be generated with the help of function
+ *   fpi_sdcp_generate_random(). On success, the device should respond using
+ *   SDCP's `AuthorizedIdentity` format, which includes the `enrollment_id` of
+ *   the identified match as well as a security digest. This response can be
+ *   verified using the function fpi_sdcp_verify_authorized_identity(), but
+ *   support for correctly generating the digest may vary by device and vendor
+ *   implementation; the important thing is that the matched `enrollment_id`
  *   can be successfully retrieved from the device.
  *
- * - As the fprintd service will sleep often, there is a caching mechanism built into this driver
- *   to serialize the connected SDCP claim to disk once the connection is established, and read
- *   this cached claim back from the disk when the service starts again. This is to prevent the need
- *   to re-establish a new connection every time that fprintd wakes again, as this can be a somewhat
- *   resource-intensive operation and might not even be supported by all devices. Again, the
- *   function fpi_sdcp_device_is_connected() can be utilized at any time to determine if issuing and
- *   verifying a new Connect is required.
+ * - As the `fprintd` service will sleep often, there is a caching mechanism
+ *   built into #FpiSdcpDevice to serialize the connected SDCP claim to disk
+ *   once the connection is established, and read this cached claim back from
+ *   disk when the service starts again. This is to prevent the need to
+ *   re-establish a new connection every time that `fprintd` wakes again, as
+ *   this can be a somewhat resource-intensive operation and might not even be
+ *   supported by all devices. The functions fpi_sdcp_device_is_connected() and
+ *   fpi_sdcp_device_can_reconnect() can be utilized at any time to determine if
+ *   establishing a new connection or reconnecting may be required.
  *
- * - Cached SDCP claims will be invalidated and ignored if 1) they were from a previous system boot,
- *   or 2) the claim_expiration_seconds time configured by the driver implementation has elapsed, at
- *   which point fpi_sdcp_device_is_connected() will return false and a new Connect should be sent
- *   and verified. In case it was not clear already, the rule of thumb is to just check
- *   fpi_sdcp_device_is_connected() every time before performing an ENROLL, VERIFY, or IDENTIFY, and
- *   send and verify a Connect if the device is not yet connected.
+ * - Cached SDCP claims will be invalidated and ignored if 1) they were from a
+ *   previous system boot, or 2) the
+ *   #FpiSdcpDeviceClass.claim_expiration_seconds configured by the driver
+ *   implementation has elapsed, at which point fpi_sdcp_device_is_connected()
+ *   will return %FALSE and a new connection should be established. The rule of
+ *   thumb is to just check fpi_sdcp_device_is_connected() (then optionally
+ *   fpi_sdcp_device_can_reconnect()) every time before performing an enroll,
+ *   verify, or identify action, and reconnect or establish a new connection
+ *   when necessary.
  */
 
 G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (FpiSdcpDevice, fpi_sdcp_device, FP_TYPE_DEVICE)
@@ -129,24 +153,24 @@ sdcp_get_pkey (const guchar *private_key_bytes, const guchar *public_key_bytes)
   EVP_PKEY_CTX *ctx;
   EVP_PKEY *key = NULL;
 
-  guchar public_key_buf[FP_SDCP_PUBLIC_KEY_SIZE];
+  guchar public_key_buf[SDCP_PUBLIC_KEY_SIZE];
 
   g_assert ((private_key_bytes && !public_key_bytes) || (!private_key_bytes && public_key_bytes));
 
   param_bld = OSSL_PARAM_BLD_new ();
   OSSL_PARAM_BLD_push_utf8_string (param_bld, OSSL_PKEY_PARAM_GROUP_NAME,
-    FP_SDCP_OPENSSL_CURVE_GROUP_NAME, sizeof (FP_SDCP_OPENSSL_CURVE_GROUP_NAME));
+    SDCP_OPENSSL_CURVE_GROUP_NAME, sizeof (SDCP_OPENSSL_CURVE_GROUP_NAME));
     
   if (private_key_bytes)
   {
     /* import private key as a BIGNUM */
-    private_key_bn = BN_bin2bn (private_key_bytes, FP_SDCP_PRIVATE_KEY_SIZE, NULL);
+    private_key_bn = BN_bin2bn (private_key_bytes, SDCP_PRIVATE_KEY_SIZE, NULL);
 
     OSSL_PARAM_BLD_push_BN (param_bld, OSSL_PKEY_PARAM_PRIV_KEY,
       private_key_bn);
 
     /* set up public key based on imported private_key_bn */
-    group = EC_GROUP_new_by_curve_name (FP_SDCP_OPENSSL_CURVE_GROUP_NID);
+    group = EC_GROUP_new_by_curve_name (SDCP_OPENSSL_CURVE_GROUP_NID);
     public_key_point = EC_POINT_new (group);
     EC_POINT_mul (group, public_key_point, private_key_bn, NULL, NULL, NULL);
     EC_POINT_point2oct (group, public_key_point, POINT_CONVERSION_UNCOMPRESSED,
@@ -159,7 +183,7 @@ sdcp_get_pkey (const guchar *private_key_bytes, const guchar *public_key_bytes)
   } else {
     /* set up public key with provided bytes */
     OSSL_PARAM_BLD_push_octet_string (param_bld, OSSL_PKEY_PARAM_PUB_KEY,
-      public_key_bytes, FP_SDCP_PUBLIC_KEY_SIZE);
+      public_key_bytes, SDCP_PUBLIC_KEY_SIZE);
   }
 
   params = OSSL_PARAM_BLD_to_param (param_bld);
@@ -193,7 +217,7 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
   BIGNUM *private_key_bn = NULL;
   guchar *private_key;
   int private_key_len = 0;
-  guchar public_key[FP_SDCP_PUBLIC_KEY_SIZE];
+  guchar public_key[SDCP_PUBLIC_KEY_SIZE];
   gsize public_key_len = 0;
   guchar *random;
 
@@ -206,7 +230,7 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
   if (private_key_bytes)
     key = sdcp_get_pkey (private_key_bytes, NULL);
   else
-    key = EVP_EC_gen (FP_SDCP_OPENSSL_CURVE_NAME);
+    key = EVP_EC_gen (SDCP_OPENSSL_CURVE_NAME);
 
   /* get private_key from the key */
   if (!EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_PRIV_KEY, &private_key_bn))
@@ -215,7 +239,7 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
       return FALSE;
     }
   private_key_len = BN_num_bytes (private_key_bn);
-  g_assert (private_key_len == FP_SDCP_PRIVATE_KEY_SIZE);
+  g_assert (private_key_len == SDCP_PRIVATE_KEY_SIZE);
   private_key = g_malloc0 (private_key_len);
   if (!BN_bn2bin (private_key_bn, private_key))
     {
@@ -226,43 +250,43 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
 
   /* if private_key_bytes were provided then ensure the new pk matches */
   if (private_key_bytes)
-    g_assert_cmpmem (private_key_bytes, FP_SDCP_PRIVATE_KEY_SIZE,
-                     private_key, FP_SDCP_PRIVATE_KEY_SIZE);
+    g_assert_cmpmem (private_key_bytes, SDCP_PRIVATE_KEY_SIZE,
+                     private_key, SDCP_PRIVATE_KEY_SIZE);
 
   /* get public_key from the key */
   if (!EVP_PKEY_get_octet_string_param (key, OSSL_PKEY_PARAM_PUB_KEY,
-      public_key, FP_SDCP_PUBLIC_KEY_SIZE, &public_key_len))
+      public_key, SDCP_PUBLIC_KEY_SIZE, &public_key_len))
     {
       g_error ("Failed getting public key");
       return FALSE;
     }
-  g_assert (public_key_len == FP_SDCP_PUBLIC_KEY_SIZE);
+  g_assert (public_key_len == SDCP_PUBLIC_KEY_SIZE);
 
   /* set private member values */
   priv->host_key = g_steal_pointer (&key);
 
   memcpy (priv->host_private_key,
           private_key,
-          FP_SDCP_PRIVATE_KEY_SIZE);
+          SDCP_PRIVATE_KEY_SIZE);
   g_free (private_key);
 
   memcpy (priv->host_public_key,
           public_key,
-          FP_SDCP_PUBLIC_KEY_SIZE);
+          SDCP_PUBLIC_KEY_SIZE);
 
   /* set provided random_bytes, otherise generate new */
   if (random_bytes)
     {
       memcpy (priv->host_random,
               random_bytes,
-              FP_SDCP_RANDOM_SIZE);
+              SDCP_RANDOM_SIZE);
     }
   else
     {
       random = fpi_sdcp_generate_random ();
       memcpy (priv->host_random,
               random,
-              FP_SDCP_RANDOM_SIZE);
+              SDCP_RANDOM_SIZE);
       g_free (random);
     }
 
@@ -277,7 +301,7 @@ sdcp_get_kbkdf_secret (const guchar *key, gsize key_len,
 {
   EVP_KDF *kdf;
   EVP_KDF_CTX *kdf_ctx;
-  guchar key_buf[FP_SDCP_MAX_SECRET_SIZE];
+  guchar key_buf[SDCP_MAX_SECRET_SIZE];
   g_autofree guchar *out = g_malloc0 (secret_len);
 
   OSSL_PARAM params[7];
@@ -337,7 +361,7 @@ sdcp_derive_key_agreement (FpiSdcpDevice *device,
   /* Get the size by passing NULL as the buffer */
   EVP_PKEY_derive (ctx, NULL, &key_agreement_len);
 
-  g_assert (key_agreement_len == FP_SDCP_KEY_AGREEMENT_SIZE);
+  g_assert (key_agreement_len == SDCP_KEY_AGREEMENT_SIZE);
 
   /* Then get the derived secret using the fetched size */
   key_agreement = g_malloc0 (key_agreement_len);
@@ -355,22 +379,22 @@ sdcp_derive_master_secret (FpiSdcpDevice *device, const guchar *device_random)
 {
   FpiSdcpDevicePrivate *priv = fpi_sdcp_device_get_instance_private (device);
 
-  guchar context[FP_SDCP_RANDOM_SIZE * 2];
+  guchar context[SDCP_RANDOM_SIZE * 2];
   g_autofree guchar *master_secret;
   int len = 0;
 
   /* context is concatenation of host_random and device_random */
-  memcpy (context, priv->host_random, FP_SDCP_RANDOM_SIZE);
-  memcpy (context + FP_SDCP_RANDOM_SIZE, device_random, FP_SDCP_RANDOM_SIZE);
+  memcpy (context, priv->host_random, SDCP_RANDOM_SIZE);
+  memcpy (context + SDCP_RANDOM_SIZE, device_random, SDCP_RANDOM_SIZE);
 
-  len = sdcp_get_kbkdf_secret (priv->key_agreement, FP_SDCP_KEY_AGREEMENT_SIZE,
+  len = sdcp_get_kbkdf_secret (priv->key_agreement, SDCP_KEY_AGREEMENT_SIZE,
                                (guchar *) "master secret", strlen ("master secret"),
                                context, sizeof (context),
-                               &master_secret, FP_SDCP_MASTER_SECRET_SIZE);
+                               &master_secret, SDCP_MASTER_SECRET_SIZE);
 
-  g_assert (len == FP_SDCP_MASTER_SECRET_SIZE);
+  g_assert (len == SDCP_MASTER_SECRET_SIZE);
 
-  memcpy (priv->master_secret, master_secret, FP_SDCP_MASTER_SECRET_SIZE);
+  memcpy (priv->master_secret, master_secret, SDCP_MASTER_SECRET_SIZE);
 
   return len;
 }
@@ -383,18 +407,18 @@ sdcp_derive_application_keys (FpiSdcpDevice *device)
   g_autofree guchar *application_keys;
   int len = 0;
 
-  len = sdcp_get_kbkdf_secret (priv->master_secret, FP_SDCP_MASTER_SECRET_SIZE,
+  len = sdcp_get_kbkdf_secret (priv->master_secret, SDCP_MASTER_SECRET_SIZE,
                                (guchar *) "application keys", strlen ("application keys"),
                                NULL, 0, /* no context for application keys per SDCP */
-                               &application_keys, FP_SDCP_APPLICATION_SECRET_SIZE
-                               + FP_SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
+                               &application_keys, SDCP_APPLICATION_SECRET_SIZE
+                               + SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
 
-  g_assert (len == FP_SDCP_APPLICATION_SECRET_SIZE
-                   + FP_SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
+  g_assert (len == SDCP_APPLICATION_SECRET_SIZE
+                   + SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
 
-  memcpy (priv->application_secret, application_keys, FP_SDCP_APPLICATION_SECRET_SIZE);
-  memcpy (priv->application_symmetric_key, application_keys + FP_SDCP_APPLICATION_SECRET_SIZE,
-          FP_SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
+  memcpy (priv->application_secret, application_keys, SDCP_APPLICATION_SECRET_SIZE);
+  memcpy (priv->application_symmetric_key, application_keys + SDCP_APPLICATION_SECRET_SIZE,
+          SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
 
   return len;
 }
@@ -516,37 +540,37 @@ fpi_sdcp_device_cache_connected_claim (FpiSdcpDevice *self)
 
   private_key_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                                priv->host_private_key,
-                                               FP_SDCP_PRIVATE_KEY_SIZE,
+                                               SDCP_PRIVATE_KEY_SIZE,
                                                sizeof (guchar));
 
   public_key_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                               priv->host_public_key,
-                                              FP_SDCP_PUBLIC_KEY_SIZE,
+                                              SDCP_PUBLIC_KEY_SIZE,
                                               sizeof (guchar));
 
   random_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                           priv->host_random,
-                                          FP_SDCP_RANDOM_SIZE,
+                                          SDCP_RANDOM_SIZE,
                                           sizeof (guchar));
 
   key_agreement_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                                  priv->key_agreement,
-                                                 FP_SDCP_KEY_AGREEMENT_SIZE,
+                                                 SDCP_KEY_AGREEMENT_SIZE,
                                                  sizeof (guchar));
 
   master_secret_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                                  priv->master_secret,
-                                                 FP_SDCP_MASTER_SECRET_SIZE,
+                                                 SDCP_MASTER_SECRET_SIZE,
                                                  sizeof (guchar));
 
   app_secret_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                               priv->application_secret,
-                                              FP_SDCP_APPLICATION_SECRET_SIZE,
+                                              SDCP_APPLICATION_SECRET_SIZE,
                                               sizeof (guchar));
 
   app_symmetric_key_var = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                                      priv->application_symmetric_key,
-                                                     FP_SDCP_APPLICATION_SYMMETRIC_KEY_SIZE,
+                                                     SDCP_APPLICATION_SYMMETRIC_KEY_SIZE,
                                                      sizeof (guchar));
 
   claim = g_variant_new (FPI_SDCP_CLAIM_GET_VARIANT_FORMAT,
@@ -729,28 +753,28 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
     goto generate_new;
 
   /* set the private key and random based on stored bytes */
-  private_key = sdcp_get_iter_value (private_key_iter, "y", FP_SDCP_PRIVATE_KEY_SIZE);
-  random = sdcp_get_iter_value (random_iter, "y", FP_SDCP_RANDOM_SIZE);
+  private_key = sdcp_get_iter_value (private_key_iter, "y", SDCP_PRIVATE_KEY_SIZE);
+  random = sdcp_get_iter_value (random_iter, "y", SDCP_RANDOM_SIZE);
   g_assert (fpi_sdcp_set_host_keys (self, private_key, random));
 
   /* ensure the public key of the newly set private key still matches from before */
-  public_key = sdcp_get_iter_value (public_key_iter, "y", FP_SDCP_PUBLIC_KEY_SIZE);
-  g_assert_cmpmem (priv->host_public_key, FP_SDCP_PUBLIC_KEY_SIZE,
-                   public_key, FP_SDCP_PUBLIC_KEY_SIZE);
+  public_key = sdcp_get_iter_value (public_key_iter, "y", SDCP_PUBLIC_KEY_SIZE);
+  g_assert_cmpmem (priv->host_public_key, SDCP_PUBLIC_KEY_SIZE,
+                   public_key, SDCP_PUBLIC_KEY_SIZE);
 
   /* set everything else in the claim */
 
-  key_agreement = sdcp_get_iter_value (key_agreement_iter, "y", FP_SDCP_KEY_AGREEMENT_SIZE);
-  memcpy (priv->key_agreement, key_agreement, FP_SDCP_KEY_AGREEMENT_SIZE);
+  key_agreement = sdcp_get_iter_value (key_agreement_iter, "y", SDCP_KEY_AGREEMENT_SIZE);
+  memcpy (priv->key_agreement, key_agreement, SDCP_KEY_AGREEMENT_SIZE);
 
-  master_secret = sdcp_get_iter_value (master_secret_iter, "y", FP_SDCP_MASTER_SECRET_SIZE);
-  memcpy (priv->master_secret, master_secret, FP_SDCP_MASTER_SECRET_SIZE);
+  master_secret = sdcp_get_iter_value (master_secret_iter, "y", SDCP_MASTER_SECRET_SIZE);
+  memcpy (priv->master_secret, master_secret, SDCP_MASTER_SECRET_SIZE);
 
-  app_secret = sdcp_get_iter_value (app_secret_iter, "y", FP_SDCP_APPLICATION_SECRET_SIZE);
-  memcpy (priv->application_secret, app_secret, FP_SDCP_APPLICATION_SECRET_SIZE);
+  app_secret = sdcp_get_iter_value (app_secret_iter, "y", SDCP_APPLICATION_SECRET_SIZE);
+  memcpy (priv->application_secret, app_secret, SDCP_APPLICATION_SECRET_SIZE);
 
-  app_symmetric_key = sdcp_get_iter_value (app_symmetric_key_iter, "y", FP_SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
-  memcpy (priv->application_symmetric_key, app_symmetric_key, FP_SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
+  app_symmetric_key = sdcp_get_iter_value (app_symmetric_key_iter, "y", SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
+  memcpy (priv->application_symmetric_key, app_symmetric_key, SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
 
   priv->is_connected = TRUE;
 
@@ -763,40 +787,71 @@ generate_new:
 
 /*********************************************************/
 
-void
-fpi_sdcp_connect_response_free (FpiSdcpConnectResponse *connect_response)
-{
-  g_clear_pointer (&connect_response->model_certificate, g_free);
-  g_clear_pointer (&connect_response, g_free);
-}
-
+/**
+ * fpi_sdcp_get_host_public_key:
+ * @device: The #FpiSdcpDevice
+ *
+ * Returns: (transfer full): The public bytes of the #FpiSdcpDevice's ephemeral
+ *   host key (`pk_h`) for use when preparing the SDCP `Connect` command payload
+ */
 guchar *
 fpi_sdcp_get_host_public_key (FpiSdcpDevice *device)
 {
   FpiSdcpDevicePrivate *priv = fpi_sdcp_device_get_instance_private (device);
-  guchar *public_key = g_malloc0 (FP_SDCP_PUBLIC_KEY_SIZE);
+  guchar *public_key = g_malloc0 (SDCP_PUBLIC_KEY_SIZE);
 
   if (!priv->host_key)
     g_assert (fpi_sdcp_device_init_claim (device));
 
-  memcpy (public_key, priv->host_public_key, FP_SDCP_PUBLIC_KEY_SIZE);
+  memcpy (public_key, priv->host_public_key, SDCP_PUBLIC_KEY_SIZE);
   return g_steal_pointer (&public_key);
 }
 
+/**
+ * fpi_sdcp_get_host_random:
+ * @device: The #FpiSdcpDevice
+ *
+ * Returns: (transfer full): The #FpiSdcpDevice's host random (`r_h`) for use
+ *   when preparing the SDCP `Connect` command payload
+ */
 guchar *
 fpi_sdcp_get_host_random (FpiSdcpDevice *device)
 {
   FpiSdcpDevicePrivate *priv = fpi_sdcp_device_get_instance_private (device);
-  guchar *random = g_malloc0 (FP_SDCP_RANDOM_SIZE);
+  guchar *random = g_malloc0 (SDCP_RANDOM_SIZE);
 
   if (!priv->host_key)
     g_assert (fpi_sdcp_device_init_claim (device));
 
-  memcpy (random, priv->host_random, FP_SDCP_RANDOM_SIZE);
+  memcpy (random, priv->host_random, SDCP_RANDOM_SIZE);
   return g_steal_pointer (&random);
 }
 
-/* See: https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#secure-connection-protocol */
+/**
+ * fpi_sdcp_derive_keys_and_verify_connect:
+ * @device: The #FpiSdcpDevice
+ * @connect_response: #FpiSdcpConnectResponse filled with the `ConnectResponse`
+ *   received from the device after executing its device- and vendor-specific
+ *   implementation of the `Connect` command
+ *
+ * Processes the @connect_response in order to establish a secure connection
+ * channel with the device using the <ulink
+ * url="https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#bootstrapping-a-secure-channel">
+ * process outlined in the SDCP documentation</ulink>:
+ *
+ * - Performs key agreement
+ * - Derives master secret
+ * - Derives application keys
+ * - Verifies the connection by regenerating and validating the MAC
+ *
+ * This function (or one of its variants) MUST be executed in order to establish
+ * a secure connection with the device BEFORE any enroll or identify/verify
+ * commands are sent to the device, as the secrets derived by this function are
+ * used when generating and validating all subsequent SDCP-related payloads.
+ *
+ * Returns: %TRUE when the connection was verified and a claim has been
+ *   established, otherwise %FALSE.
+ */
 gboolean
 fpi_sdcp_derive_keys_and_verify_connect (FpiSdcpDevice          *device,
                                          FpiSdcpConnectResponse *connect_response)
@@ -807,9 +862,9 @@ fpi_sdcp_derive_keys_and_verify_connect (FpiSdcpDevice          *device,
   EVP_MD *sha256;
   EVP_MAC *hmac;
   EVP_MAC_CTX *hmac_ctx;
-  guchar claim_hash[FP_SDCP_DIGEST_SIZE];
+  guchar claim_hash[SDCP_DIGEST_SIZE];
   guint claim_hash_len = 0;
-  guchar host_connect_mac[FP_SDCP_DIGEST_SIZE];
+  guchar host_connect_mac[SDCP_DIGEST_SIZE];
   gsize host_connect_mac_len = 0;
 
   OSSL_PARAM hmac_sha256_params[] = {
@@ -844,30 +899,30 @@ fpi_sdcp_derive_keys_and_verify_connect (FpiSdcpDevice          *device,
   EVP_DigestInit_ex (sh256_ctx, sha256, NULL);
   EVP_DigestUpdate (sh256_ctx, connect_response->model_certificate,
                     connect_response->model_certificate_len);
-  EVP_DigestUpdate (sh256_ctx, connect_response->device_public_key, FP_SDCP_PUBLIC_KEY_SIZE);
-  EVP_DigestUpdate (sh256_ctx, connect_response->firmware_public_key, FP_SDCP_PUBLIC_KEY_SIZE);
-  EVP_DigestUpdate (sh256_ctx, connect_response->firmware_hash, FP_SDCP_DIGEST_SIZE);
-  EVP_DigestUpdate (sh256_ctx, connect_response->model_signature, FP_SDCP_SIGNATURE_SIZE);
-  EVP_DigestUpdate (sh256_ctx, connect_response->device_signature, FP_SDCP_SIGNATURE_SIZE);
+  EVP_DigestUpdate (sh256_ctx, connect_response->device_public_key, SDCP_PUBLIC_KEY_SIZE);
+  EVP_DigestUpdate (sh256_ctx, connect_response->firmware_public_key, SDCP_PUBLIC_KEY_SIZE);
+  EVP_DigestUpdate (sh256_ctx, connect_response->firmware_hash, SDCP_DIGEST_SIZE);
+  EVP_DigestUpdate (sh256_ctx, connect_response->model_signature, SDCP_SIGNATURE_SIZE);
+  EVP_DigestUpdate (sh256_ctx, connect_response->device_signature, SDCP_SIGNATURE_SIZE);
   EVP_DigestFinal_ex (sh256_ctx, claim_hash, &claim_hash_len);
   EVP_MD_CTX_free (sh256_ctx);
   EVP_MD_free (sha256);
 
-  g_assert (claim_hash_len == FP_SDCP_DIGEST_SIZE);
+  g_assert (claim_hash_len == SDCP_DIGEST_SIZE);
 
   hmac = EVP_MAC_fetch (NULL, "hmac", NULL);
   hmac_ctx = EVP_MAC_CTX_new (hmac);
-  EVP_MAC_init (hmac_ctx, priv->application_secret, FP_SDCP_DIGEST_SIZE, hmac_sha256_params);
+  EVP_MAC_init (hmac_ctx, priv->application_secret, SDCP_DIGEST_SIZE, hmac_sha256_params);
   EVP_MAC_update (hmac_ctx, (guchar *) "connect", sizeof ("connect"));
-  EVP_MAC_update (hmac_ctx, claim_hash, FP_SDCP_DIGEST_SIZE);
-  EVP_MAC_final (hmac_ctx, host_connect_mac, &host_connect_mac_len, FP_SDCP_DIGEST_SIZE);
+  EVP_MAC_update (hmac_ctx, claim_hash, SDCP_DIGEST_SIZE);
+  EVP_MAC_final (hmac_ctx, host_connect_mac, &host_connect_mac_len, SDCP_DIGEST_SIZE);
   EVP_MAC_CTX_free (hmac_ctx);
   EVP_MAC_free (hmac);
 
-  g_assert (host_connect_mac_len == FP_SDCP_DIGEST_SIZE);
+  g_assert (host_connect_mac_len == SDCP_DIGEST_SIZE);
 
   if (memcmp (connect_response->mac, host_connect_mac,
-    FP_SDCP_DIGEST_SIZE) == 0) {
+    SDCP_DIGEST_SIZE) == 0) {
     fp_info ("SDCP ConnectResponse verified successfully.");
     priv->is_connected = TRUE;
     priv->connected_uptime = g_get_monotonic_time ();
@@ -880,6 +935,20 @@ fpi_sdcp_derive_keys_and_verify_connect (FpiSdcpDevice          *device,
   }
 }
 
+/**
+ * fpi_sdcp_derive_keys_and_verify_connect_buf:
+ * @device: The #FpiSdcpDevice
+ * @connect_response_buf: Buffer that contains a `ConnectResponse` which exactly
+ *   matches the specification
+ * @connect_response_buf_len: Length of @connect_response_buf
+ *
+ * Variant of fpi_sdcp_derive_keys_and_verify_connect() that can be used when
+ * the provided @connect_response_buf exactly matches the `ConnectResponse`
+ * payload specified in the SDCP documentation (`r_d`, `c`, `m`).
+ *
+ * Returns: %TRUE when the connection was verified and a claim has been
+ *   established, otherwise %FALSE.
+ */
 gboolean
 fpi_sdcp_derive_keys_and_verify_connect_buf (FpiSdcpDevice *device,
                                              const guchar  *connect_response_buf,
@@ -889,21 +958,21 @@ fpi_sdcp_derive_keys_and_verify_connect_buf (FpiSdcpDevice *device,
   int pos = 0;
 
   /* buf len should be at least larger than all required parts (plus a cert) */
-  g_assert (connect_response_buf_len > FP_SDCP_RANDOM_SIZE
-                                       + FP_SDCP_PUBLIC_KEY_SIZE
-                                       + FP_SDCP_PUBLIC_KEY_SIZE
-                                       + FP_SDCP_DIGEST_SIZE
-                                       + FP_SDCP_SIGNATURE_SIZE
-                                       + FP_SDCP_SIGNATURE_SIZE
-                                       + FP_SDCP_DIGEST_SIZE);
+  g_assert (connect_response_buf_len > SDCP_RANDOM_SIZE
+                                       + SDCP_PUBLIC_KEY_SIZE
+                                       + SDCP_PUBLIC_KEY_SIZE
+                                       + SDCP_DIGEST_SIZE
+                                       + SDCP_SIGNATURE_SIZE
+                                       + SDCP_SIGNATURE_SIZE
+                                       + SDCP_DIGEST_SIZE);
 
   /* r_d */
-  memcpy (response->device_random, connect_response_buf + pos, FP_SDCP_RANDOM_SIZE);
-  pos += FP_SDCP_RANDOM_SIZE;
+  memcpy (response->device_random, connect_response_buf + pos, SDCP_RANDOM_SIZE);
+  pos += SDCP_RANDOM_SIZE;
 
   /* get cert_m length from its' TLV */
   response->model_certificate_len = fpi_sdcp_get_cert_length_from_buf (connect_response_buf
-                                                                       + FP_SDCP_RANDOM_SIZE);
+                                                                       + SDCP_RANDOM_SIZE);
 
   /* cert_m */
   response->model_certificate = g_malloc0 (response->model_certificate_len);
@@ -911,32 +980,56 @@ fpi_sdcp_derive_keys_and_verify_connect_buf (FpiSdcpDevice *device,
   pos += response->model_certificate_len;
 
   /* pk_d */
-  memcpy (response->device_public_key, connect_response_buf + pos, FP_SDCP_PUBLIC_KEY_SIZE);
-  pos += FP_SDCP_PUBLIC_KEY_SIZE;
+  memcpy (response->device_public_key, connect_response_buf + pos, SDCP_PUBLIC_KEY_SIZE);
+  pos += SDCP_PUBLIC_KEY_SIZE;
 
   /* pk_f */
-  memcpy (response->firmware_public_key, connect_response_buf + pos, FP_SDCP_PUBLIC_KEY_SIZE);
-  pos += FP_SDCP_PUBLIC_KEY_SIZE;
+  memcpy (response->firmware_public_key, connect_response_buf + pos, SDCP_PUBLIC_KEY_SIZE);
+  pos += SDCP_PUBLIC_KEY_SIZE;
 
   /* h_f */
-  memcpy (response->firmware_hash, connect_response_buf + pos, FP_SDCP_DIGEST_SIZE);
-  pos += FP_SDCP_DIGEST_SIZE;
+  memcpy (response->firmware_hash, connect_response_buf + pos, SDCP_DIGEST_SIZE);
+  pos += SDCP_DIGEST_SIZE;
 
   /* s_m */
-  memcpy (response->model_signature, connect_response_buf + pos, FP_SDCP_SIGNATURE_SIZE);
-  pos += FP_SDCP_SIGNATURE_SIZE;
+  memcpy (response->model_signature, connect_response_buf + pos, SDCP_SIGNATURE_SIZE);
+  pos += SDCP_SIGNATURE_SIZE;
 
   /* s_d */
-  memcpy (response->device_signature, connect_response_buf + pos, FP_SDCP_SIGNATURE_SIZE);
-  pos += FP_SDCP_SIGNATURE_SIZE;
+  memcpy (response->device_signature, connect_response_buf + pos, SDCP_SIGNATURE_SIZE);
+  pos += SDCP_SIGNATURE_SIZE;
 
   /* m */
-  memcpy (response->mac, connect_response_buf + pos, FP_SDCP_DIGEST_SIZE);
-  pos += FP_SDCP_DIGEST_SIZE;
+  memcpy (response->mac, connect_response_buf + pos, SDCP_DIGEST_SIZE);
+  pos += SDCP_DIGEST_SIZE;
 
   return fpi_sdcp_derive_keys_and_verify_connect (device, response);
 }
 
+/**
+ * fpi_sdcp_derive_keys_and_verify_connect_ex:
+ * @device: The #FpiSdcpDevice
+ * @device_random: Random bytes generated by the device (`r_d`)
+ * @model_certificate: Microsoft-issued per-model certificate encoded in x509
+ *   ASN.1 DER format (`cert_m`)
+ * @model_certificate_len: Length of @model_certificate
+ * @device_public_key: The per-device ECDSA public key (`pk_d`)
+ * @firmware_public_key: The ephemeral public key generated by the device
+ *   firmware (`pk_f`)
+ * @firmware_hash: Hash of the firmware and firmware public key (`h_f`)
+ * @model_signature: Device public key signed by the model key (`s_m`)
+ * @device_signature: Firmware hash and public key signed by the device private
+ *   key (`s_d`)
+ * @mac: MAC of the claim hash (`m`)
+ *
+ * Variant of fpi_sdcp_derive_keys_and_verify_connect() that can be used in
+ * cases where the device- and vendor-specific implementation of the
+ * `ConnectResponse` may require additional parsing and it is easier to provide
+ * each member of the response as a separate parameter.
+ *
+ * Returns: %TRUE when the connection was verified and a claim has been
+ *   established, otherwise %FALSE.
+ */
 gboolean
 fpi_sdcp_derive_keys_and_verify_connect_ex (FpiSdcpDevice *device,
                                             const guchar  *device_random,
@@ -953,19 +1046,33 @@ fpi_sdcp_derive_keys_and_verify_connect_ex (FpiSdcpDevice *device,
 
   response->model_certificate = g_malloc0 (model_certificate_len);
 
-  memcpy (response->device_random, device_random, FP_SDCP_RANDOM_SIZE);
+  memcpy (response->device_random, device_random, SDCP_RANDOM_SIZE);
   memcpy (response->model_certificate, model_certificate, model_certificate_len);
   response->model_certificate_len = model_certificate_len;
-  memcpy (response->device_public_key, device_public_key, FP_SDCP_PUBLIC_KEY_SIZE);
-  memcpy (response->firmware_public_key, firmware_public_key, FP_SDCP_PUBLIC_KEY_SIZE);
-  memcpy (response->firmware_hash, firmware_hash, FP_SDCP_DIGEST_SIZE);
-  memcpy (response->model_signature, model_signature, FP_SDCP_SIGNATURE_SIZE);
-  memcpy (response->device_signature, device_signature, FP_SDCP_SIGNATURE_SIZE);
-  memcpy (response->mac, mac, FP_SDCP_DIGEST_SIZE);
+  memcpy (response->device_public_key, device_public_key, SDCP_PUBLIC_KEY_SIZE);
+  memcpy (response->firmware_public_key, firmware_public_key, SDCP_PUBLIC_KEY_SIZE);
+  memcpy (response->firmware_hash, firmware_hash, SDCP_DIGEST_SIZE);
+  memcpy (response->model_signature, model_signature, SDCP_SIGNATURE_SIZE);
+  memcpy (response->device_signature, device_signature, SDCP_SIGNATURE_SIZE);
+  memcpy (response->mac, mac, SDCP_DIGEST_SIZE);
 
   return fpi_sdcp_derive_keys_and_verify_connect (device, response);
 }
 
+/**
+ * fpi_sdcp_device_is_connected:
+ * @device: The #FpiSdcpDevice
+ *
+ * Helper function that can be used to determine if the driver should establish
+ * a secure connection with the device (by executing the device's SDCP `Connect`
+ * command and processing the `ConnectResponse` using
+ * fpi_sdcp_derive_keys_and_verify_connect()) prior to executing any enroll,
+ * verify, or identify commands on the device.
+ *
+ * Returns: %TRUE if a valid connection claim already exists for the device, or
+ *   %FALSE if there is no existing claim or the claim has expired according to
+ *   the #FpiSdcpDeviceClass.claim_expiration_seconds set by the driver
+ */
 gboolean
 fpi_sdcp_device_is_connected (FpiSdcpDevice *device)
 {
@@ -980,6 +1087,17 @@ fpi_sdcp_device_is_connected (FpiSdcpDevice *device)
   return !sdcp_is_claim_expired (device);
 }
 
+/**
+ * fpi_sdcp_device_can_reconnect:
+ * @device: The #FpiSdcpDevice
+ *
+ * Helper function that can be used to determine if the driver should be able to
+ * execute an SDCP `Reconnect` when fpi_sdcp_device_is_connected() has returned
+ * %FALSE.
+ *
+ * Returns: %TRUE if #FpiSdcpDeviceClass.supports_reconnect and there is an
+ *   existing but expired connection claim for the device, otherwise %FALSE
+ */
 gboolean
 fpi_sdcp_device_can_reconnect (FpiSdcpDevice *device)
 {
@@ -994,7 +1112,28 @@ fpi_sdcp_device_can_reconnect (FpiSdcpDevice *device)
   return sdcp_is_claim_expired (device);
 }
 
-  /* See: https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#reusing-an-existing-connection */
+/**
+ * fpi_sdcp_verify_reconnect:
+ * @device: The #FpiSdcpDevice
+ * @host_reconnect_random: Reconnect random (`r_h`) that was sent to device when
+ *   executing its device- and vendor-specific implemenation of the `Reconnect`
+ *   command
+ * @device_reconnect_mac: Reconnect MAC (`m`) received from the device after
+ *   executing its device- and vendor-specific implemenation of the `Reconnect`
+ *   command
+ *
+ * Verifies a successful reconnection by regenerating and validating the
+ * reconnect MAC from the existing claim's derived secrets and the provided
+ * @host_reconnect_random, using the <ulink
+ * url="https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#reusing-an-existing-connection">
+ * Reconnect process outlined in the SDCP documentation</ulink>.
+ *
+ * If %FALSE is returned then the reconnection was not successful, in which
+ * case a full `Connect` sequence should then be executed to establish a new
+ * secure connection channel.
+ *
+ * Returns: %TRUE when the reconnection was verified, otherwise %FALSE.
+ */
 gboolean
 fpi_sdcp_verify_reconnect (FpiSdcpDevice *device,
                            const guchar  *host_reconnect_random,
@@ -1004,7 +1143,7 @@ fpi_sdcp_verify_reconnect (FpiSdcpDevice *device,
 
   EVP_MAC *hmac;
   EVP_MAC_CTX *hmac_ctx;
-  guchar host_reconnect_mac[FP_SDCP_DIGEST_SIZE];
+  guchar host_reconnect_mac[SDCP_DIGEST_SIZE];
   gsize host_reconnect_mac_len = 0;
 
   OSSL_PARAM hmac_sha256_params[] = {
@@ -1017,17 +1156,17 @@ fpi_sdcp_verify_reconnect (FpiSdcpDevice *device,
 
   hmac = EVP_MAC_fetch (NULL, "hmac", NULL);
   hmac_ctx = EVP_MAC_CTX_new (hmac);
-  EVP_MAC_init (hmac_ctx, priv->application_secret, FP_SDCP_APPLICATION_SECRET_SIZE,
+  EVP_MAC_init (hmac_ctx, priv->application_secret, SDCP_APPLICATION_SECRET_SIZE,
                 hmac_sha256_params);
   EVP_MAC_update (hmac_ctx, (guchar *) "reconnect", sizeof ("reconnect"));
-  EVP_MAC_update (hmac_ctx, host_reconnect_random, FP_SDCP_DIGEST_SIZE);
-  EVP_MAC_final (hmac_ctx, host_reconnect_mac, &host_reconnect_mac_len, FP_SDCP_DIGEST_SIZE);
+  EVP_MAC_update (hmac_ctx, host_reconnect_random, SDCP_DIGEST_SIZE);
+  EVP_MAC_final (hmac_ctx, host_reconnect_mac, &host_reconnect_mac_len, SDCP_DIGEST_SIZE);
   EVP_MAC_CTX_free (hmac_ctx);
   EVP_MAC_free (hmac);
 
-  g_assert (host_reconnect_mac_len == FP_SDCP_DIGEST_SIZE);
+  g_assert (host_reconnect_mac_len == SDCP_DIGEST_SIZE);
 
-  if (memcmp (device_reconnect_mac, host_reconnect_mac, FP_SDCP_DIGEST_SIZE) == 0) {
+  if (memcmp (device_reconnect_mac, host_reconnect_mac, SDCP_DIGEST_SIZE) == 0) {
     fp_info ("SDCP ReconnectResponse verified successfully.");
     priv->is_connected = TRUE;
     priv->connected_uptime = g_get_monotonic_time ();
@@ -1036,11 +1175,30 @@ fpi_sdcp_verify_reconnect (FpiSdcpDevice *device,
     return TRUE;
   } else {
     fp_err ("SDCP ReconnectResponse verification failed");
+    /* TODO: Should this set priv->is_connected to FALSE? */
     return FALSE;
   }
 }
 
-/* See: https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#identification */
+/**
+ * fpi_sdcp_verify_authorized_identity:
+ * @device: The #FpiSdcpDevice
+ * @host_identify_nonce: Identification nonce (`n`) that was sent to device when
+ *   executing its device- and vendor-specific implemenation of the `Identify`
+ *   command
+ * @device_enrollment_id: Enrollment ID (`id`) received from the device's
+ *   template database to indicate which print was identified upon a successful
+ *   execution of its `Identify` command
+ * @device_reconnect_mac: Identify MAC (`m`) received from the device
+ *
+ * Validates the MAC generated by the device can be regenerated by the host
+ * using the existing claim's derived secrets and the provided
+ * @host_identify_nonce, in accordance with the <ulink
+ * url="https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#identification">
+ * Identification process outlined in the SDCP documentation</ulink>.
+ *
+ * Returns: %TRUE when the Identify MAC was verified, otherwise %FALSE.
+ */
 gboolean
 fpi_sdcp_verify_authorized_identity (FpiSdcpDevice *device,
                                      const guchar  *host_identify_nonce,
@@ -1051,7 +1209,7 @@ fpi_sdcp_verify_authorized_identity (FpiSdcpDevice *device,
 
   EVP_MAC *hmac;
   EVP_MAC_CTX *hmac_ctx;
-  guchar host_identify_mac[FP_SDCP_DIGEST_SIZE];
+  guchar host_identify_mac[SDCP_DIGEST_SIZE];
   gsize host_identify_mac_len = 0;
 
   OSSL_PARAM hmac_sha256_params[] = {
@@ -1063,18 +1221,18 @@ fpi_sdcp_verify_authorized_identity (FpiSdcpDevice *device,
 
   hmac = EVP_MAC_fetch (NULL, "hmac", NULL);
   hmac_ctx = EVP_MAC_CTX_new (hmac);
-  EVP_MAC_init (hmac_ctx, priv->application_secret, FP_SDCP_APPLICATION_SECRET_SIZE,
+  EVP_MAC_init (hmac_ctx, priv->application_secret, SDCP_APPLICATION_SECRET_SIZE,
                 hmac_sha256_params);
   EVP_MAC_update (hmac_ctx, (guchar *) "identify", sizeof ("identify"));
-  EVP_MAC_update (hmac_ctx, host_identify_nonce, FP_SDCP_NONCE_SIZE);
-  EVP_MAC_update (hmac_ctx, device_enrollment_id, FP_SDCP_ENROLLMENT_ID_SIZE);
-  EVP_MAC_final (hmac_ctx, host_identify_mac, &host_identify_mac_len, FP_SDCP_DIGEST_SIZE);
+  EVP_MAC_update (hmac_ctx, host_identify_nonce, SDCP_NONCE_SIZE);
+  EVP_MAC_update (hmac_ctx, device_enrollment_id, SDCP_ENROLLMENT_ID_SIZE);
+  EVP_MAC_final (hmac_ctx, host_identify_mac, &host_identify_mac_len, SDCP_DIGEST_SIZE);
   EVP_MAC_CTX_free (hmac_ctx);
   EVP_MAC_free (hmac);
 
-  g_assert (host_identify_mac_len == FP_SDCP_DIGEST_SIZE);
+  g_assert (host_identify_mac_len == SDCP_DIGEST_SIZE);
 
-  if (memcmp (device_identify_mac, host_identify_mac, FP_SDCP_DIGEST_SIZE) == 0) {
+  if (memcmp (device_identify_mac, host_identify_mac, SDCP_DIGEST_SIZE) == 0) {
     fp_info ("SDCP AuthorizedIdentity verified successfully.");
     return TRUE;
   } else {
@@ -1083,19 +1241,45 @@ fpi_sdcp_verify_authorized_identity (FpiSdcpDevice *device,
   }
 }
 
+/**
+ * fpi_sdcp_generate_random:
+ *
+ * Generates a new secure random of length %SDCP_RANDOM_SIZE that can be used
+ * when building the command payload for executing the device's `Enroll` and
+ * `Identify` commands
+ *
+ * Returns: (transfer full): A new secure random of length %SDCP_RANDOM_SIZE
+ */
 guchar *
 fpi_sdcp_generate_random (void)
 {
-  guchar buf[FP_SDCP_RANDOM_SIZE];
-  guchar *out = g_malloc0 (FP_SDCP_RANDOM_SIZE);
+  guchar buf[SDCP_RANDOM_SIZE];
+  guchar *out = g_malloc0 (SDCP_RANDOM_SIZE);
 
-  RAND_bytes (buf, FP_SDCP_RANDOM_SIZE);
-  memcpy (out, buf, FP_SDCP_RANDOM_SIZE);
+  RAND_bytes (buf, SDCP_RANDOM_SIZE);
+  memcpy (out, buf, SDCP_RANDOM_SIZE);
 
   return g_steal_pointer (&out);
 }
 
-/* See: https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#enrollment */
+/**
+ * fpi_sdcp_generate_enrollment_id:
+ * @device: The #FpiSdcpDevice
+ * @device_nonce: Enrollment nonce (`n`) that was received from the device when
+ *   executing its device- and vendor-specific implemenation of the
+ *   `EnrollBegin` command
+ *
+ * Generates a new Enrollment ID of length %SDCP_ENROLLMENT_ID_SIZE from the
+ * existing claim's derived secrets and the provided @device_nonce.
+ *
+ * This Enrollment ID must be used when building the command payload for
+ * executing the device's `EnrollCommit` command, in accordance with the <ulink
+ * url="https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol#enrollment">
+ * Enrollment process outlined in the SDCP documentation</ulink>.
+ *
+ * Returns: (transfer full): A new Enrollment ID of length
+ *   %SDCP_ENROLLMENT_ID_SIZE
+ */
 guchar *
 fpi_sdcp_generate_enrollment_id (FpiSdcpDevice *device,
                                  const guchar  *device_nonce)
@@ -1104,7 +1288,7 @@ fpi_sdcp_generate_enrollment_id (FpiSdcpDevice *device,
 
   EVP_MAC *hmac;
   EVP_MAC_CTX *hmac_ctx;
-  g_autofree guchar *out = g_malloc0 (FP_SDCP_ENROLLMENT_ID_SIZE);
+  g_autofree guchar *out = g_malloc0 (SDCP_ENROLLMENT_ID_SIZE);
   gsize out_len;
 
   OSSL_PARAM hmac_sha256_params[] = {
@@ -1116,19 +1300,29 @@ fpi_sdcp_generate_enrollment_id (FpiSdcpDevice *device,
 
   hmac = EVP_MAC_fetch (NULL, "hmac", NULL);
   hmac_ctx = EVP_MAC_CTX_new (hmac);
-  EVP_MAC_init (hmac_ctx, priv->application_secret, FP_SDCP_APPLICATION_SECRET_SIZE,
+  EVP_MAC_init (hmac_ctx, priv->application_secret, SDCP_APPLICATION_SECRET_SIZE,
                 hmac_sha256_params);
   EVP_MAC_update (hmac_ctx, (guchar *) "enroll", sizeof ("enroll"));
-  EVP_MAC_update (hmac_ctx, device_nonce, FP_SDCP_NONCE_SIZE);
-  EVP_MAC_final (hmac_ctx, out, &out_len, FP_SDCP_ENROLLMENT_ID_SIZE);
+  EVP_MAC_update (hmac_ctx, device_nonce, SDCP_NONCE_SIZE);
+  EVP_MAC_final (hmac_ctx, out, &out_len, SDCP_ENROLLMENT_ID_SIZE);
   EVP_MAC_CTX_free (hmac_ctx);
   EVP_MAC_free (hmac);
 
-  g_assert (out_len == FP_SDCP_ENROLLMENT_ID_SIZE);
+  g_assert (out_len == SDCP_ENROLLMENT_ID_SIZE);
   
   return g_steal_pointer (&out);
 }
 
+/**
+ * fpi_sdcp_get_cert_length_from_buf:
+ * @buf: Buffer that starts with (but can be longer than) a DER-encoded ASN.1
+ *   certificate
+ *
+ * Helper function that inspects the TLV of @buf to extract and return the
+ * length of the certificate that @buf starts with.
+ *
+ * Returns: The length of the certificate from the start of @buf
+ */
 int
 fpi_sdcp_get_cert_length_from_buf (const guchar *buf)
 {
@@ -1162,6 +1356,20 @@ fpi_sdcp_get_cert_length_from_buf (const guchar *buf)
   result += 2 + buf_value_length;
 
   return result;
+}
+
+/**
+ * fpi_sdcp_connect_response_free:
+ * @connect_response: The #FpiSdcpConnectResponse
+ *
+ * Frees the @connect_response. Will be called automatically if the
+ * #FpiSdcpConnectResponse is declared using `g_autoptr`.
+ */
+void
+fpi_sdcp_connect_response_free (FpiSdcpConnectResponse *connect_response)
+{
+  g_clear_pointer (&connect_response->model_certificate, g_free);
+  g_clear_pointer (&connect_response, g_free);
 }
 
 /*********************************************************/
