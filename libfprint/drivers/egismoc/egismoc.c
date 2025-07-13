@@ -405,8 +405,6 @@ egismoc_wait_finger_run_state (FpiSsm   *ssm,
     case WAIT_FINGER_NOT_ON_SENSOR:
       if (self->wait_finger_start + EGISMOC_FINGER_ON_SENSOR_TIMEOUT_USEC > g_get_monotonic_time ())
         {
-          fp_dbg ("Wait for finger read attempt at %ld ...", g_get_monotonic_time ()); /* TODO REMOVE THIS! */
-
           transfer = fpi_usb_transfer_new (device);
           fpi_usb_transfer_fill_interrupt (transfer, EGISMOC_EP_CMD_INTERRUPT_IN,
                                            EGISMOC_USB_INTERRUPT_IN_RECV_LENGTH);
