@@ -24,7 +24,7 @@
 #        sudo hexdump -e '16/1 "%02x " "\n"' $(sudo find /tmp/.libfprint/egismoc/ -name sdcp-claim)
 
 claim_bytes = bytes.fromhex("""
-a6 12 97 2a 13 00 00 00 39 e8 fc da 42 39 06 00
+a6 12 97 2a 13 00 00 00
 1c 72 86 5a fe 85 3a 28 68 1d 88 b3 0c cb 81 0b
 84 19 75 38 b2 43 c7 57 60 27 05 66 ab ab d8 b7
 04 2c 92 51 13 83 c8 aa 32 ee 51 ef 49 95 7a 6f
@@ -41,7 +41,7 @@ b5 30 6d 02 f5 de ae 35 ba d2 ab 91 06 75 28 74
 00 0c bb 99 62 40 7d 66 3e 46 be 11 7c e3 a2 c8
 ff 59 7f f3 66 ed 13 a1 b6 91 a8 72 81 d9 f6 04
 4c a4 b2 ad 13 b4 aa b9 4a b3 f2 73 2c 67 3c 13
-92 f1 00 d1 00 b1 00 91 00 71 00 30 00
+92 e9 00 c9 00 a9 00 89 00 69 00 28 00
 """)
 
 # 4. Wipe the claims cache folder:
@@ -60,7 +60,7 @@ import sys
 import time
 import gi
 from math import trunc
-from os import makedirs, path
+from os import makedirs, path, remove
 from tempfile import gettempdir
 
 gi.require_version('FPrint', '2.0')
@@ -78,16 +78,14 @@ devices = c.get_devices()
 d = devices[0]
 del devices
 
-# We will need to set a new uptime and realtime in the above claim bytes so that libfprint will not 
-# se the cached claim as "expired". These are both int64 numbers in little endian.
+# We will need to set a new claim connected_time in the above claim bytes so that libfprint will not
+# see the cached claim as "expired". This is an int64 number in little endian.
 
-uptime = GLib.get_monotonic_time()
-realtime = GLib.get_real_time()
-uptime_bytes = uptime.to_bytes(8, byteorder = 'little')
-realtime_bytes = realtime.to_bytes(8, byteorder = 'little')
+connected_time = GLib.get_monotonic_time()
+connected_time_bytes = connected_time.to_bytes(8, byteorder = 'little')
 
-# Swap out uptime and realtime with our new values
-claim_bytes = uptime_bytes + realtime_bytes + claim_bytes[16:]
+# Swap out connected_time in the above payload with our new value
+claim_bytes = connected_time_bytes + claim_bytes[8:]
 
 # Now we will pre-cache this claim file so that the test script will re-use the same SDCP claim as the capture
 claim_file_path = path.join(gettempdir(), ".libfprint", "egismoc", "emulated-device")
@@ -230,3 +228,6 @@ d.close_sync()
 
 del d
 del c
+
+# Clean up dummy cached SDCP claim file
+remove(claim_file_path)

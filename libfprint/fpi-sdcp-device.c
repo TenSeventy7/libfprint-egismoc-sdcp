@@ -38,7 +38,7 @@
  *
  * This is a base internal class for devices implementing Microsoft's <ulink
  * url="https://github.com/microsoft/SecureDeviceConnectionProtocol/wiki/Secure-Device-Connection-Protocol">
- * Secure Device Connection Protocol (SDCP)</ulink>. This is an internal-only
+ * Secure Device Connection Protocol</ulink> (SDCP). This is an internal-only
  * device type, providing just a thin wrapper over the normal #FpDevice type as
  * well as some additional helper functions for building the various payloads
  * that are required when interacting with devices that require SDCP.
@@ -425,8 +425,8 @@ sdcp_derive_application_keys (FpiSdcpDevice *device)
 
 /*********************************************************/
 
-#define FPI_SDCP_CLAIM_VARIANT_FORMAT "(xxayayayayayayay)"
-#define FPI_SDCP_CLAIM_GET_VARIANT_FORMAT "(xx@ay@ay@ay@ay@ay@ay@ay)"
+#define FPI_SDCP_CLAIM_VARIANT_FORMAT "(xayayayayayayay)"
+#define FPI_SDCP_CLAIM_GET_VARIANT_FORMAT "(x@ay@ay@ay@ay@ay@ay@ay)"
 
 /*
  * fpi_sdcp_device_get_cached_claim_path uses a bit of shameless stealing from
@@ -574,8 +574,7 @@ fpi_sdcp_device_cache_connected_claim (FpiSdcpDevice *self)
                                                      sizeof (guchar));
 
   claim = g_variant_new (FPI_SDCP_CLAIM_GET_VARIANT_FORMAT,
-                         priv->connected_uptime,
-                         priv->connected_realtime,
+                         priv->claim_connected_time,
                          g_variant_ref_sink (private_key_var),
                          g_variant_ref_sink (public_key_var),
                          g_variant_ref_sink (random_var),
@@ -606,18 +605,24 @@ fpi_sdcp_device_cache_connected_claim (FpiSdcpDevice *self)
   fp_dbg ("Cached SDCP claim to file \"%s\"", path);
 }
 
-static guchar *
-sdcp_get_iter_value (GVariantIter *iter, const gchar *format_string, gsize len)
+static gboolean
+sdcp_get_iter_bytes_value (GVariantIter *iter, gsize len, guchar **out)
 {
   guchar *result = g_malloc0 (len);
   guchar tmp;
   int i = 0;
-  while (g_variant_iter_loop (iter, format_string, &tmp))
+  while (g_variant_iter_loop (iter, "y", &tmp))
     {
-      g_assert (i < len);
+      if (i >= len)
+        {
+          fp_warn ("GVariantIter bytes length is greater than desired output length.");
+          g_free (result);
+          return FALSE;
+        }
       result[i++] = tmp;
     }
-  return g_steal_pointer (&result);
+  *out = g_steal_pointer (&result);
+  return TRUE;
 }
 
 static GVariant *
@@ -641,13 +646,13 @@ fpi_sdcp_device_get_cached_claim_variant (FpiSdcpDevice *self)
   if (!g_file_get_contents (path, (gchar **) &file_data, &file_data_len, &err))
     {
       fp_dbg ("Failed to read cached claim file \"%s\"", path);
-      return NULL;
+      goto delete_and_exit;
     }
   if (err)
     {
       fp_dbg ("Error when attempting to read cached claim file (\"%s\"): %s",
                path, err->message);
-      return NULL;
+      goto delete_and_exit;
     }
 
   variant_raw = g_variant_new_from_data (G_VARIANT_TYPE (FPI_SDCP_CLAIM_VARIANT_FORMAT),
@@ -656,7 +661,7 @@ fpi_sdcp_device_get_cached_claim_variant (FpiSdcpDevice *self)
   if (!variant_raw)
     {
       fp_dbg ("Failed to get GVariant from claim file data (\"%s\")", path);
-      return NULL;
+      goto delete_and_exit;
     }
 
 #if (G_BYTE_ORDER == G_BIG_ENDIAN)
@@ -668,6 +673,10 @@ fpi_sdcp_device_get_cached_claim_variant (FpiSdcpDevice *self)
   fp_dbg ("Got cached SDCP claim from file \"%s\"", path);
 
   return g_steal_pointer (&variant);
+
+delete_and_exit:
+  fpi_sdcp_device_delete_cached_claim (self);
+  return NULL;
 }
 
 static gboolean
@@ -679,7 +688,8 @@ sdcp_is_claim_expired (FpiSdcpDevice *device)
   if (priv->claim_expiration_seconds < 0)
     return FALSE;
 
-  expires_at = priv->connected_uptime + ((gint64) priv->claim_expiration_seconds * G_USEC_PER_SEC);
+  expires_at = priv->claim_connected_time
+               + ((gint64) priv->claim_expiration_seconds * G_USEC_PER_SEC);
 
   if (expires_at < g_get_monotonic_time ())
     {
@@ -691,7 +701,7 @@ sdcp_is_claim_expired (FpiSdcpDevice *device)
   return FALSE;
 }
 
-#define SDCP_CLAIM_UPTIME_FUZZINESS (5 * G_USEC_PER_SEC) /* 5 seconds */
+#define SDCP_CLAIM_TIME_FUZZINESS (5 * G_USEC_PER_SEC) /* 5 seconds */
 
 static gboolean
 fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
@@ -713,23 +723,20 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
   g_autofree guchar *app_secret = NULL;
   g_autoptr(GVariantIter) app_symmetric_key_iter= NULL;
   g_autofree guchar *app_symmetric_key = NULL;
-  gint64 uptime;
-  gint64 realtime;
-  gint64 cached_uptime;
-  gint64 cached_realtime;
+  gint64 now;
+  gint64 connected_time;
+  gboolean read = FALSE;
 
   cached = fpi_sdcp_device_get_cached_claim_variant (self);
 
   if (!cached)
     goto generate_new;
 
-  uptime = g_get_monotonic_time ();
-  realtime = g_get_real_time ();
+  now = g_get_monotonic_time ();
 
   g_variant_get (cached,
                  FPI_SDCP_CLAIM_VARIANT_FORMAT,
-                 &cached_uptime,
-                 &cached_realtime,
+                 &connected_time,
                  &private_key_iter,
                  &public_key_iter,
                  &random_iter,
@@ -738,48 +745,68 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
                  &app_secret_iter,
                  &app_symmetric_key_iter);
 
-  if (uptime < (cached_uptime - SDCP_CLAIM_UPTIME_FUZZINESS) ||
-      (realtime - uptime) > (cached_realtime - cached_uptime + SDCP_CLAIM_UPTIME_FUZZINESS))
+  if (now < (connected_time - SDCP_CLAIM_TIME_FUZZINESS))
     {
       fp_dbg ("Cached SDCP claim is from a previous boot and is no longer valid.");
       fpi_sdcp_device_delete_cached_claim (self);
       goto generate_new;
     }
 
-  priv->connected_uptime = cached_uptime;
-  priv->connected_realtime = cached_realtime;
+  priv->claim_connected_time = connected_time;
 
   if (sdcp_is_claim_expired (self))
     goto generate_new;
 
   /* set the private key and random based on stored bytes */
-  private_key = sdcp_get_iter_value (private_key_iter, "y", SDCP_PRIVATE_KEY_SIZE);
-  random = sdcp_get_iter_value (random_iter, "y", SDCP_RANDOM_SIZE);
-  g_assert (fpi_sdcp_set_host_keys (self, private_key, random));
+  read = sdcp_get_iter_bytes_value (private_key_iter, SDCP_PRIVATE_KEY_SIZE, &private_key);
+  if (!read)
+    goto cache_init_failed;
+
+  read = sdcp_get_iter_bytes_value (random_iter, SDCP_RANDOM_SIZE, &random);
+  if (!read)
+    goto cache_init_failed;
+
+  if (!fpi_sdcp_set_host_keys (self, private_key, random))
+    goto cache_init_failed;
 
   /* ensure the public key of the newly set private key still matches from before */
-  public_key = sdcp_get_iter_value (public_key_iter, "y", SDCP_PUBLIC_KEY_SIZE);
-  g_assert_cmpmem (priv->host_public_key, SDCP_PUBLIC_KEY_SIZE,
-                   public_key, SDCP_PUBLIC_KEY_SIZE);
+  read = sdcp_get_iter_bytes_value (public_key_iter, SDCP_PUBLIC_KEY_SIZE, &public_key);
+  if (memcmp (priv->host_public_key, public_key, SDCP_PUBLIC_KEY_SIZE) != 0)
+    {
+      fp_warn ("Public key in cached claim does not match cached private key's public bytes");
+      goto cache_init_failed;
+    }
 
   /* set everything else in the claim */
 
-  key_agreement = sdcp_get_iter_value (key_agreement_iter, "y", SDCP_KEY_AGREEMENT_SIZE);
+  read = sdcp_get_iter_bytes_value (key_agreement_iter, SDCP_KEY_AGREEMENT_SIZE, &key_agreement);
+  if (!read)
+    goto cache_init_failed;
   memcpy (priv->key_agreement, key_agreement, SDCP_KEY_AGREEMENT_SIZE);
 
-  master_secret = sdcp_get_iter_value (master_secret_iter, "y", SDCP_MASTER_SECRET_SIZE);
+  read = sdcp_get_iter_bytes_value (master_secret_iter, SDCP_MASTER_SECRET_SIZE, &master_secret);
+  if (!read)
+    goto cache_init_failed;
   memcpy (priv->master_secret, master_secret, SDCP_MASTER_SECRET_SIZE);
 
-  app_secret = sdcp_get_iter_value (app_secret_iter, "y", SDCP_APPLICATION_SECRET_SIZE);
+  read = sdcp_get_iter_bytes_value (app_secret_iter, SDCP_APPLICATION_SECRET_SIZE, &app_secret);
+  if (!read)
+    goto cache_init_failed;
   memcpy (priv->application_secret, app_secret, SDCP_APPLICATION_SECRET_SIZE);
 
-  app_symmetric_key = sdcp_get_iter_value (app_symmetric_key_iter, "y", SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
+  read = sdcp_get_iter_bytes_value (app_symmetric_key_iter, SDCP_APPLICATION_SYMMETRIC_KEY_SIZE,
+                                    &app_symmetric_key);
+  if (!read)
+    goto cache_init_failed;
   memcpy (priv->application_symmetric_key, app_symmetric_key, SDCP_APPLICATION_SYMMETRIC_KEY_SIZE);
 
   priv->is_connected = TRUE;
 
   return TRUE;
 
+cache_init_failed:
+  fp_warn ("Failed initializing claim from cached file.");
+  fpi_sdcp_device_delete_cached_claim (self);
 generate_new:
   fp_dbg ("Generating new SDCP device host keys.");
   return fpi_sdcp_set_host_keys (self, NULL, NULL);
@@ -925,8 +952,7 @@ fpi_sdcp_derive_keys_and_verify_connect (FpiSdcpDevice          *device,
     SDCP_DIGEST_SIZE) == 0) {
     fp_info ("SDCP ConnectResponse verified successfully.");
     priv->is_connected = TRUE;
-    priv->connected_uptime = g_get_monotonic_time ();
-    priv->connected_realtime = g_get_real_time ();
+    priv->claim_connected_time = g_get_monotonic_time ();
     fpi_sdcp_device_cache_connected_claim (device);
     return TRUE;
   } else {
@@ -1169,8 +1195,7 @@ fpi_sdcp_verify_reconnect (FpiSdcpDevice *device,
   if (memcmp (device_reconnect_mac, host_reconnect_mac, SDCP_DIGEST_SIZE) == 0) {
     fp_info ("SDCP ReconnectResponse verified successfully.");
     priv->is_connected = TRUE;
-    priv->connected_uptime = g_get_monotonic_time ();
-    priv->connected_realtime = g_get_real_time ();
+    priv->claim_connected_time = g_get_monotonic_time ();
     fpi_sdcp_device_cache_connected_claim (device);
     return TRUE;
   } else {

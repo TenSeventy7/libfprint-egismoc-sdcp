@@ -36,11 +36,10 @@ typedef struct
   guchar application_symmetric_key[SDCP_APPLICATION_SYMMETRIC_KEY_SIZE];
 
   gboolean is_connected;
-  gint64 connected_uptime;
-  gint64 connected_realtime;
   gboolean supports_reconnect;
 
   gchar *claim_storage_path;
+  gint64 claim_connected_time;
   gint32 claim_expiration_seconds;
 } FpiSdcpDevicePrivate;
 
