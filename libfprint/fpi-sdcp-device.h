@@ -140,8 +140,8 @@ gboolean fpi_sdcp_verify_reconnect (FpiSdcpDevice *device,
 
 gboolean fpi_sdcp_verify_authorized_identity (FpiSdcpDevice *device,
                                               const guchar  *host_identify_nonce,
-                                              const guchar  *device_id,
-                                              const guchar  *device_mac);
+                                              const guchar  *device_enrollment_id,
+                                              const guchar  *device_identify_mac);
 
 guchar *fpi_sdcp_generate_random (void);
 
