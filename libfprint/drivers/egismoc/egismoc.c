@@ -371,8 +371,11 @@ egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
   fp_dbg ("Finger on sensor callback");
 
   g_return_if_fail (transfer->ssm);
-  if (error)
+
+  if (error) {
     fpi_ssm_mark_failed (transfer->ssm, error);
+    return;
+  }
 
   /* finger is "present" when buffer begins with "SIGE" and ends in valid suffix */
   if (memcmp (transfer->buffer, egismoc_read_prefix, 4) == 0 &&
