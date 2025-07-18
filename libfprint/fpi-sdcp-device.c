@@ -425,8 +425,34 @@ sdcp_derive_application_keys (FpiSdcpDevice *device)
 
 /*********************************************************/
 
-#define FPI_SDCP_CLAIM_VARIANT_FORMAT "(xayayayayayayay)"
-#define FPI_SDCP_CLAIM_GET_VARIANT_FORMAT "(x@ay@ay@ay@ay@ay@ay@ay)"
+#define FPI_SDCP_CLAIM_VARIANT_FORMAT "(ayayayayayayayxs)"
+#define FPI_SDCP_CLAIM_GET_VARIANT_FORMAT "(@ay@ay@ay@ay@ay@ay@ayxs)"
+#define KERNEL_BOOT_ID_PATH "/proc/sys/kernel/random/boot_id"
+
+static char *boot_id = NULL;
+
+static const gchar *
+sdcp_get_boot_id (void)
+{
+  g_autofree gchar *kernel_boot_id = NULL;
+
+  /* if possible, read the boot_id exposed by the kernel */
+  if (boot_id == NULL)
+    if (g_file_get_contents (KERNEL_BOOT_ID_PATH, &kernel_boot_id, NULL, NULL))
+      boot_id = g_strdup (kernel_boot_id);
+
+  /*
+   * if that fails, try to use a "boot time"-like value, converted to seconds
+   * unfortunately monotonic_time can lose ticks during suspend which will occasionally
+   * lead to mismatches when using this logic
+   * (which will lead to new connections even if they are not always needed)
+   */
+  if (boot_id == NULL)
+    boot_id = g_strdup_printf ("%ld",
+                               (g_get_real_time () - g_get_monotonic_time ()) / G_USEC_PER_SEC);
+
+  return boot_id;
+}
 
 /*
  * fpi_sdcp_device_get_cached_claim_path uses a bit of shameless stealing from
@@ -574,14 +600,15 @@ fpi_sdcp_device_cache_connected_claim (FpiSdcpDevice *self)
                                                      sizeof (guchar));
 
   claim = g_variant_new (FPI_SDCP_CLAIM_GET_VARIANT_FORMAT,
-                         priv->claim_connected_time,
                          g_variant_ref_sink (private_key_var),
                          g_variant_ref_sink (public_key_var),
                          g_variant_ref_sink (random_var),
                          g_variant_ref_sink (key_agreement_var),
                          g_variant_ref_sink (master_secret_var),
                          g_variant_ref_sink (app_secret_var),
-                         g_variant_ref_sink (app_symmetric_key_var));
+                         g_variant_ref_sink (app_symmetric_key_var),
+                         priv->claim_connected_time,
+                         sdcp_get_boot_id ());
 
 #if (G_BYTE_ORDER == G_BIG_ENDIAN)
   GVariant *tmp;
@@ -701,8 +728,6 @@ sdcp_is_claim_expired (FpiSdcpDevice *device)
   return FALSE;
 }
 
-#define SDCP_CLAIM_TIME_FUZZINESS (5 * G_USEC_PER_SEC) /* 5 seconds */
-
 static gboolean
 fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
 {
@@ -723,7 +748,7 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
   g_autofree guchar *app_secret = NULL;
   g_autoptr(GVariantIter) app_symmetric_key_iter= NULL;
   g_autofree guchar *app_symmetric_key = NULL;
-  gint64 now;
+  g_autofree gchar *cached_boot_id = NULL;
   gint64 connected_time;
   gboolean read = FALSE;
 
@@ -732,22 +757,21 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
   if (!cached)
     goto generate_new;
 
-  now = g_get_monotonic_time ();
-
   g_variant_get (cached,
                  FPI_SDCP_CLAIM_VARIANT_FORMAT,
-                 &connected_time,
                  &private_key_iter,
                  &public_key_iter,
                  &random_iter,
                  &key_agreement_iter,
                  &master_secret_iter,
                  &app_secret_iter,
-                 &app_symmetric_key_iter);
+                 &app_symmetric_key_iter,
+                 &connected_time,
+                 &cached_boot_id);
 
-  if (now < (connected_time - SDCP_CLAIM_TIME_FUZZINESS))
+  if (!g_str_equal (cached_boot_id, sdcp_get_boot_id ()))
     {
-      fp_dbg ("Cached SDCP claim is from a previous boot and is no longer valid.");
+      fp_dbg ("Cached SDCP claim is from previous boot %s and is no longer valid.", cached_boot_id);
       fpi_sdcp_device_delete_cached_claim (self);
       goto generate_new;
     }

@@ -24,7 +24,6 @@
 #        sudo hexdump -e '16/1 "%02x " "\n"' $(sudo find /tmp/.libfprint/egismoc/ -name sdcp-claim)
 
 claim_bytes = bytes.fromhex("""
-a6 12 97 2a 13 00 00 00
 1c 72 86 5a fe 85 3a 28 68 1d 88 b3 0c cb 81 0b
 84 19 75 38 b2 43 c7 57 60 27 05 66 ab ab d8 b7
 04 2c 92 51 13 83 c8 aa 32 ee 51 ef 49 95 7a 6f
@@ -41,7 +40,12 @@ b5 30 6d 02 f5 de ae 35 ba d2 ab 91 06 75 28 74
 00 0c bb 99 62 40 7d 66 3e 46 be 11 7c e3 a2 c8
 ff 59 7f f3 66 ed 13 a1 b6 91 a8 72 81 d9 f6 04
 4c a4 b2 ad 13 b4 aa b9 4a b3 f2 73 2c 67 3c 13
-92 e9 00 c9 00 a9 00 89 00 69 00 28 00
+92 00 00 00 00 00 00 00
+4d 15 b1 6f 01 00 00 00
+63 31 35 35 37 35 61 39 2d 62 35 35 66 2d 34 65
+38 63 2d 61 61 39 38 2d 63 33 61 63 39 32 30 63
+30 36 38 39 0a
+00 01 01 e1 00 c1 00 a1 00 81 00 61 00 20 00
 """)
 
 # 4. Wipe the claims cache folder:
@@ -78,14 +82,25 @@ devices = c.get_devices()
 d = devices[0]
 del devices
 
-# We will need to set a new claim connected_time in the above claim bytes so that libfprint will not
-# see the cached claim as "expired". This is an int64 number in little endian.
+# We will need to set a new claim connected_time and boot_id in the above claim bytes so that
+# libfprint will not see the cached claim as from a different boot_id or "expired".
 
+# connected_time is an int64 number in little endian.
 connected_time = GLib.get_monotonic_time()
 connected_time_bytes = connected_time.to_bytes(8, byteorder = 'little')
 
-# Swap out connected_time in the above payload with our new value
-claim_bytes = connected_time_bytes + claim_bytes[8:]
+# boot_id we can read from /proc/sys/kernel/random/boot_id
+boot_id = None
+try:
+    with open("/proc/sys/kernel/random/boot_id", "r") as boot_id_file:
+        boot_id = boot_id_file.read()
+except Exception:
+    # if boot_id could not be read, then it should be real_time - monotonic_time instead (converted to seconds instead of microseconds)
+    boot_id = str(trunc((GLib.get_real_time() - GLib.get_monotonic_time()) / 1000000))
+
+# Swap out connected_time and boot_id in the above payload with our new values
+# (first 264 chars + new connected_time + boot_id + last 15 chars)
+claim_bytes = claim_bytes[:264] + connected_time_bytes + boot_id.encode() + claim_bytes[-15:]
 
 # Now we will pre-cache this claim file so that the test script will re-use the same SDCP claim as the capture
 claim_file_path = path.join(gettempdir(), ".libfprint", "egismoc", "emulated-device")
