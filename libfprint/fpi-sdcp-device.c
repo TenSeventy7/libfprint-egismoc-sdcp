@@ -749,7 +749,7 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
   g_autoptr(GVariantIter) app_symmetric_key_iter= NULL;
   g_autofree guchar *app_symmetric_key = NULL;
   g_autofree gchar *cached_boot_id = NULL;
-  gint64 connected_time;
+  gint64 cached_connected_time;
   gboolean read = FALSE;
 
   cached = fpi_sdcp_device_get_cached_claim_variant (self);
@@ -766,7 +766,7 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
                  &master_secret_iter,
                  &app_secret_iter,
                  &app_symmetric_key_iter,
-                 &connected_time,
+                 &cached_connected_time,
                  &cached_boot_id);
 
   if (!g_str_equal (cached_boot_id, sdcp_get_boot_id ()))
@@ -776,7 +776,7 @@ fpi_sdcp_device_init_claim (FpiSdcpDevice *self)
       goto generate_new;
     }
 
-  priv->claim_connected_time = connected_time;
+  priv->claim_connected_time = cached_connected_time;
 
   if (sdcp_is_claim_expired (self))
     goto generate_new;
