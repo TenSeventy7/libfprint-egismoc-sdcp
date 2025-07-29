@@ -1869,7 +1869,7 @@ egismoc_probe (FpDevice *device)
   driver_data = fpi_device_get_driver_data (device);
   if (driver_data & EGISMOC_DRIVER_MAX_ENROLL_STAGES_20)
      self->max_enroll_stages = 20;
-  if (driver_data & EGISMOC_DRIVER_MAX_ENROLL_STAGES_15)
+  else if (driver_data & EGISMOC_DRIVER_MAX_ENROLL_STAGES_15)
     self->max_enroll_stages = 15;
   else
     self->max_enroll_stages = EGISMOC_MAX_ENROLL_STAGES_DEFAULT;
