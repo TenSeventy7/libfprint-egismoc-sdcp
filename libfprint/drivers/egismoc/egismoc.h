@@ -38,6 +38,8 @@ G_DECLARE_FINAL_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI, DEVICE_EGISMOC,
 #define EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 (1 << 1)
 #define EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 (1 << 2)
 #define EGISMOC_DRIVER_MAX_ENROLL_STAGES_15 (1 << 3)
+#define EGISMOC_DRIVER_NEEDS_INIT_SDCP (1 << 4)
+#define EGISMOC_DRIVER_SKIP_CONTROL_INIT (1 << 5)
 
 #define EGISMOC_EP_CMD_OUT (0x02 | FPI_USB_ENDPOINT_OUT)
 #define EGISMOC_EP_CMD_IN (0x81 | FPI_USB_ENDPOINT_IN)
@@ -144,6 +146,8 @@ static gsize rsp_commit_success_suffix_len = sizeof (rsp_commit_success_suffix) 
 
 static guchar cmd_sdcp_connect_prefix[] = {0x00, 0x00, 0x00, 0x6b, 0x50, 0x57, 0x01, 0x00, 0x00, 0x00, 0x62, 0x20};
 static gsize cmd_sdcp_connect_prefix_len = sizeof (cmd_sdcp_connect_prefix) / sizeof (cmd_sdcp_connect_prefix[0]);
+static guchar cmd_sdcp_init[] = {0x00, 0x00, 0x00, 0x07, 0x50, 0x19, 0x04, 0x00, 0x00, 0x01, 0x40};
+static gsize cmd_sdcp_init_len = sizeof (cmd_sdcp_init) / sizeof (cmd_sdcp_init[0]);
 static guchar cmd_sdcp_connect_suffix[] = {0x00, 0x00};
 static gsize cmd_sdcp_connect_suffix_len = sizeof (cmd_sdcp_connect_suffix) / sizeof (cmd_sdcp_connect_suffix[0]);
 static guchar rsp_sdcp_connect_success_suffix[] = {0x90, 0x00};
@@ -192,6 +196,7 @@ typedef enum {
 } WaitFingerStates;
 
 typedef enum {
+  IDENTIFY_SDCP_INIT,
   IDENTIFY_SDCP_CONNECT,
   IDENTIFY_GET_ENROLLED_IDS,
   IDENTIFY_CHECK_ENROLLED_NUM,
@@ -206,6 +211,7 @@ typedef enum {
 } IdentifyStates;
 
 typedef enum {
+  ENROLL_SDCP_INIT,
   ENROLL_SDCP_CONNECT,
   ENROLL_GET_ENROLLED_IDS,
   ENROLL_CHECK_ENROLLED_NUM,
