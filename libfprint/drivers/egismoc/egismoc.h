@@ -125,17 +125,12 @@ static guchar rsp_commit_success_suffix[] = {0x90, 0x00};
 static gsize rsp_commit_success_suffix_len = sizeof (rsp_commit_success_suffix) / sizeof (rsp_commit_success_suffix[0]);
 
 
-/* commands which exist on the device but are currently not used */
-/*
-   static guchar cmd_sensor_cancel[] = {0x00, 0x00, 0x00, 0x04, 0x50, 0x16, 0x04, 0x00};
-   static gsize cmd_sensor_cancel_len = sizeof(cmd_sensor_cancel) / sizeof(cmd_sensor_cancel[0]);
+/* commands observed in Windows traces after the identify check */
+static guchar cmd_sensor_verify[] = {0x00, 0x00, 0x00, 0x04, 0x50, 0x04, 0x01, 0x00};
+static gsize cmd_sensor_verify_len = sizeof (cmd_sensor_verify) / sizeof (cmd_sensor_verify[0]);
 
-   static guchar cmd_sensor_verify[] = {0x00, 0x00, 0x00, 0x04, 0x50, 0x04, 0x01, 0x00};
-   static gsize cmd_sensor_verify_len = sizeof(cmd_sensor_verify) / sizeof(cmd_sensor_verify[0]);
-
-   static guchar cmd_read_verify[] = {0x00, 0x00, 0x00, 0x04, 0x50, 0x04, 0x02, 0x00};
-   static gsize cmd_read_verify_len = sizeof(cmd_read_verify) / sizeof(cmd_read_verify[0]);
- */
+static guchar cmd_read_verify[] = {0x00, 0x00, 0x00, 0x04, 0x50, 0x04, 0x02, 0x00};
+static gsize cmd_read_verify_len = sizeof (cmd_read_verify) / sizeof (cmd_read_verify[0]);
 
 
 /* prefixes/suffixes and other things for dynamically created command payloads */
@@ -200,6 +195,11 @@ typedef enum {
   IDENTIFY_WAIT_FINGER,
   IDENTIFY_SENSOR_CHECK,
   IDENTIFY_CHECK,
+  IDENTIFY_VERIFY_SENSOR_RESET,
+  IDENTIFY_VERIFY_SENSOR_IDENTIFY,
+  IDENTIFY_VERIFY_SENSOR_VERIFY,
+  IDENTIFY_VERIFY_WAIT_FINGER,
+  IDENTIFY_VERIFY_READ_VERIFY,
   IDENTIFY_COMPLETE_SENSOR_RESET,
   IDENTIFY_COMPLETE,
   IDENTIFY_STATES,

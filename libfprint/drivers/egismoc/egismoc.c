@@ -48,6 +48,12 @@ struct _FpiDeviceEgisMoc
   gint            max_enroll_stages;
   FpiSsm         *wait_finger_ssm;
   gint64          wait_finger_start;
+  gboolean        identify_type2_retry;
+  gboolean        identify_verify_probe;
+  guint           verify_partial_retries;
+  guint           verify_identify_nomatch_retries;
+  gboolean        verify_skip_wait_after_restart;
+  guint           verify_retry_settle_ms;
   GCancellable   *interrupt_cancellable;
 };
 
@@ -55,7 +61,7 @@ G_DEFINE_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FPI_TYPE_SDCP_DEVICE);
 
 static const FpIdEntry egismoc_id_table[] = {
   { .vid = 0x1c7a, .pid = 0x0582, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 },
-  { .vid = 0x1c7a, .pid = 0x0583, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_15 },
+  { .vid = 0x1c7a, .pid = 0x0583, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x0584, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x0586, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x0587, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
@@ -86,6 +92,14 @@ egismoc_validate_response_prefix (const guchar *buffer_in,
                                   const guchar *valid_prefix,
                                   const gsize   valid_prefix_len)
 {
+  if (buffer_in_len < egismoc_read_prefix_len +
+                      EGISMOC_CHECK_BYTES_LENGTH +
+                      valid_prefix_len)
+    {
+      fp_dbg ("Response prefix valid: NO");
+      return FALSE;
+    }
+
   const gboolean result = memcmp (buffer_in +
                                   (egismoc_read_prefix_len +
                                    EGISMOC_CHECK_BYTES_LENGTH),
@@ -102,12 +116,70 @@ egismoc_validate_response_suffix (const guchar *buffer_in,
                                   const guchar *valid_suffix,
                                   const gsize   valid_suffix_len)
 {
+  if (buffer_in_len < valid_suffix_len)
+    {
+      fp_dbg ("Response suffix valid: NO");
+      return FALSE;
+    }
+
   const gboolean result = memcmp (buffer_in + (buffer_in_len - valid_suffix_len),
                                   valid_suffix,
                                   valid_suffix_len) == 0;
 
   fp_dbg ("Response suffix valid: %s", result ? "yes" : "NO");
   return result;
+}
+
+static gboolean
+egismoc_interrupt_is_blank_arm_event (const guchar *buffer_in,
+                                      gsize         buffer_in_len)
+{
+  const gsize ff_start = egismoc_read_prefix_len + EGISMOC_CHECK_BYTES_LENGTH + 7;
+
+  if (buffer_in_len <= ff_start + rsp_sensor_has_finger_suffix_len)
+    return FALSE;
+
+  for (gsize i = ff_start; i < buffer_in_len - rsp_sensor_has_finger_suffix_len; i++)
+    {
+      if (buffer_in[i] != 0xff)
+        return FALSE;
+    }
+
+  return TRUE;
+}
+
+static gboolean
+egismoc_response_is_partial_read_failure (const guchar *buffer_in,
+                                          gsize         buffer_in_len)
+{
+  if (buffer_in_len < egismoc_read_prefix_len +
+                      EGISMOC_CHECK_BYTES_LENGTH + 2)
+    return FALSE;
+
+  if (memcmp (buffer_in, egismoc_read_prefix, egismoc_read_prefix_len) != 0)
+    return FALSE;
+
+  if (egismoc_validate_response_prefix (buffer_in,
+                                        buffer_in_len,
+                                        rsp_read_dirty_prefix,
+                                        rsp_read_dirty_prefix_len))
+    return TRUE;
+
+  if (buffer_in[buffer_in_len - 2] != 0x64)
+    return FALSE;
+
+  switch (buffer_in[buffer_in_len - 1])
+    {
+    case 0x91:
+    case 0x93:
+    case 0x95:
+    case 0x98:
+      return TRUE;
+    default:
+      fp_info ("Verify sensor read returned unhandled partial status 64:%02X",
+               buffer_in[buffer_in_len - 1]);
+      return FALSE;
+    }
 }
 
 static void
@@ -360,7 +432,17 @@ egismoc_wait_finger_ssm_done (FpiSsm   *ssm,
   self->wait_finger_start = 0;
 
   if (error)
-    fpi_device_action_error (device, error);
+    {
+      /*
+       * Keep the parent task SSM in sync with wait-finger failures.
+       * Reporting the action error directly leaves task_ssm live, so
+       * the next open asserts on self->task_ssm != NULL.
+       */
+      if (self->task_ssm)
+        fpi_ssm_mark_failed (self->task_ssm, error);
+      else
+        fpi_device_action_error (device, error);
+    }
 }
 
 static void
@@ -370,27 +452,106 @@ egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
                              GError         *error)
 {
   fp_dbg ("Finger on sensor callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  const gint64 now = g_get_monotonic_time ();
+  g_autofree gchar *interrupt_hex = NULL;
 
   g_return_if_fail (transfer->ssm);
 
-  if (error) {
-    fpi_ssm_mark_failed (transfer->ssm, error);
-    return;
-  }
+  if (error)
+    {
+      if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          now < self->wait_finger_start + EGISMOC_FINGER_ON_SENSOR_TIMEOUT_USEC)
+        {
+          if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+              now >= self->wait_finger_start + (G_USEC_PER_SEC / 4))
+            {
+              fp_info ("No finger interrupt received during verify; trying delayed sensor check fallback");
+              g_error_free (error);
+              fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+              fpi_ssm_next_state (transfer->ssm);
+              return;
+            }
+
+          if (fpi_device_get_current_action (device) != FPI_DEVICE_ACTION_VERIFY &&
+              now >= self->wait_finger_start + (8 * G_USEC_PER_SEC))
+            {
+              fp_dbg ("No finger interrupt received; forcing sensor check fallback");
+              g_error_free (error);
+              fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
+              fpi_ssm_next_state (transfer->ssm);
+              return;
+            }
+
+          g_error_free (error);
+          fpi_ssm_jump_to_state_delayed (transfer->ssm,
+                                         WAIT_FINGER_NOT_ON_SENSOR,
+                                         250);
+          return;
+        }
+
+      fpi_ssm_mark_failed (transfer->ssm, error);
+      return;
+    }
+
+  interrupt_hex = OPENSSL_buf2hexstr (transfer->buffer,
+                                      MIN (transfer->actual_length, 64));
+  fp_info ("Finger interrupt raw response (%" G_GSIZE_FORMAT " bytes): %s",
+           transfer->actual_length, interrupt_hex);
 
   /* finger is "present" when buffer begins with "SIGE" and ends in valid suffix */
-  if (memcmp (transfer->buffer, egismoc_read_prefix, 4) == 0 &&
+  if (transfer->actual_length >= egismoc_read_prefix_len &&
+      memcmp (transfer->buffer, egismoc_read_prefix, egismoc_read_prefix_len) == 0 &&
       egismoc_validate_response_suffix (transfer->buffer,
                                         transfer->actual_length,
                                         rsp_sensor_has_finger_suffix,
                                         rsp_sensor_has_finger_suffix_len))
     {
+      if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+          egismoc_interrupt_is_blank_arm_event (transfer->buffer,
+                                                transfer->actual_length))
+        {
+          if (now >= self->wait_finger_start + G_USEC_PER_SEC)
+            {
+              fp_info ("Repeated blank verify-arm interrupt; trying sensor check fallback");
+              fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+              fpi_ssm_next_state (transfer->ssm);
+              return;
+            }
+
+          fp_info ("Ignoring blank verify-arm interrupt while waiting for finger");
+          fpi_ssm_jump_to_state_delayed (transfer->ssm,
+                                         WAIT_FINGER_NOT_ON_SENSOR,
+                                         250);
+          return;
+        }
+
       fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
       fpi_ssm_next_state (transfer->ssm);
     }
   else
     {
-      fpi_ssm_jump_to_state (transfer->ssm, WAIT_FINGER_NOT_ON_SENSOR);
+      if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+          now >= self->wait_finger_start + G_USEC_PER_SEC)
+        {
+          fp_info ("No valid finger interrupt received during verify; trying delayed sensor check fallback");
+          fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+          fpi_ssm_next_state (transfer->ssm);
+          return;
+        }
+
+      if (fpi_device_get_current_action (device) != FPI_DEVICE_ACTION_VERIFY &&
+          now >= self->wait_finger_start + (8 * G_USEC_PER_SEC))
+        {
+          fp_dbg ("No valid finger interrupt received; forcing sensor check fallback");
+          fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
+          fpi_ssm_next_state (transfer->ssm);
+          return;
+        }
+
+      fpi_ssm_jump_to_state_delayed (transfer->ssm,
+                                     WAIT_FINGER_NOT_ON_SENSOR,
+                                     250);
     }
 }
 
@@ -415,7 +576,7 @@ egismoc_wait_finger_run_state (FpiSsm   *ssm,
           transfer->short_is_error = FALSE;
 
           fpi_usb_transfer_submit (g_steal_pointer (&transfer),
-                                  EGISMOC_USB_INTERRUPT_TIMEOUT,
+                                  250,
                                   self->interrupt_cancellable,
                                   egismoc_finger_on_sensor_cb,
                                   NULL);
@@ -430,7 +591,8 @@ egismoc_wait_finger_run_state (FpiSsm   *ssm,
 
     case WAIT_FINGER_ON_SENSOR:
       fpi_ssm_mark_completed (ssm);
-      fpi_ssm_next_state (self->task_ssm);
+      /* Give this firmware a short settle window before the sensor check. */
+      fpi_ssm_next_state_delayed (self->task_ssm, 300);
       break;
     }
 }
@@ -1102,10 +1264,14 @@ egismoc_read_capture_cb (FpDevice *device,
       egismoc_enroll_status_report (device, enroll_print, ENROLL_STATUS_RETRY, error);
     }
 
+  fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
+
   if (enroll_print->stage == self->max_enroll_stages)
     fpi_ssm_next_state (self->task_ssm);
   else
-    fpi_ssm_jump_to_state (self->task_ssm, ENROLL_CAPTURE_SENSOR_RESET);
+    fpi_ssm_jump_to_state_delayed (self->task_ssm,
+                                   ENROLL_CAPTURE_SENSOR_RESET,
+                                   1200);
 }
 
 static void
@@ -1188,6 +1354,7 @@ egismoc_get_check_cmd (FpDevice *device,
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
   g_auto(FpiByteWriter) writer = {0};
   g_autofree guchar *result = NULL;
+  g_autofree gchar *payload_hex = NULL;
   gboolean written = TRUE;
 
   /*
@@ -1209,11 +1376,15 @@ egismoc_get_check_cmd (FpDevice *device,
   g_assert (self->enrolled_ids);
   const gsize body_length = sizeof (guchar) * self->enrolled_ids->len * SDCP_ENROLLMENT_ID_SIZE;
 
+  const gboolean use_type2_check = self->identify_type2_retry ||
+                                   (fpi_device_get_driver_data (device) &
+                                    EGISMOC_DRIVER_CHECK_PREFIX_TYPE2);
+
   /* prefix length can depend on the type */
-  const gsize check_prefix_length = (fpi_device_get_driver_data (device) &
-                                     EGISMOC_DRIVER_CHECK_PREFIX_TYPE2) ?
+  const gsize check_prefix_length = use_type2_check ?
                                     cmd_check_prefix_type2_len :
                                     cmd_check_prefix_type1_len;
+  fp_dbg ("Using identify check prefix type %d", use_type2_check ? 2 : 1);
 
   /* total_length is the 6 various bytes plus all other prefixes/suffixes and
    * the body payload */
@@ -1251,7 +1422,7 @@ egismoc_get_check_cmd (FpDevice *device,
     }
 
   /* command prefix */
-  if (fpi_device_get_driver_data (device) & EGISMOC_DRIVER_CHECK_PREFIX_TYPE2)
+  if (use_type2_check)
     written &= fpi_byte_writer_put_data (&writer, cmd_check_prefix_type2,
                                          cmd_check_prefix_type2_len);
   else
@@ -1292,7 +1463,13 @@ egismoc_get_check_cmd (FpDevice *device,
   if (length_out)
     *length_out = total_length;
 
-  return fpi_byte_writer_reset_and_get_data (&writer);
+  result = fpi_byte_writer_reset_and_get_data (&writer);
+  payload_hex = OPENSSL_buf2hexstr (result, MIN (total_length, 128));
+  fp_info ("Identify check command payload (%" G_GSIZE_FORMAT " bytes): %s",
+           total_length,
+           payload_hex);
+
+  return g_steal_pointer (&result);
 }
 
 static void
@@ -1467,6 +1644,7 @@ egismoc_identify_check_cb (FpDevice *device,
   FpPrint *print = NULL;
   FpPrint *verify_print = NULL;
   g_autofree gchar *verify_print_finger_str = NULL;
+  g_autofree gchar *response_hex = NULL;
   GPtrArray *prints;
   gboolean found = FALSE;
   guint index;
@@ -1477,12 +1655,34 @@ egismoc_identify_check_cb (FpDevice *device,
       return;
     }
 
+  response_hex = OPENSSL_buf2hexstr (buffer_in, MIN (length_in, 96));
+  fp_dbg ("Identify check raw response (%" G_GSIZE_FORMAT " bytes): %s",
+          length_in, response_hex);
+
   /* Check that the read payload indicates "match" */
   if (egismoc_validate_response_suffix (buffer_in,
                                         length_in,
                                         rsp_identify_match_suffix,
                                         rsp_identify_match_suffix_len))
     {
+      const gsize identify_response_min_len = EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE +
+                                              SDCP_DIGEST_SIZE +
+                                              SDCP_ENROLLMENT_ID_SIZE +
+                                              rsp_identify_match_suffix_len;
+
+      if (length_in < identify_response_min_len)
+        {
+          fpi_ssm_mark_failed (self->task_ssm,
+                               fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                         "Device SDCP Identify "
+                                                         "response was too short"));
+          return;
+        }
+
+      self->identify_verify_probe = FALSE;
+      self->identify_type2_retry = FALSE;
+      self->verify_identify_nomatch_retries = 0;
+
       /*
         Normally for SDCP the "Authorized Identity" response should be (id,m)
         but on egismoc devices there is a prefix, followed by (m,id) (yes, it
@@ -1565,6 +1765,30 @@ egismoc_identify_check_cb (FpDevice *device,
     {
       fp_info ("Print was not identified by the device");
 
+      if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+          !self->identify_verify_probe)
+        {
+          self->verify_identify_nomatch_retries++;
+          self->identify_type2_retry = FALSE;
+
+          if (self->verify_identify_nomatch_retries < 4)
+            {
+              fp_info ("Dynamic identify returned no-match; restarting primary verify scan (%u)",
+                       self->verify_identify_nomatch_retries);
+              fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
+              self->verify_skip_wait_after_restart = TRUE;
+              self->verify_retry_settle_ms = 350;
+              fpi_ssm_jump_to_state_delayed (self->task_ssm,
+                                             IDENTIFY_SENSOR_RESET,
+                                             250);
+              return;
+            }
+
+          fp_info ("Dynamic identify no-match retry limit reached; reporting no match");
+        }
+      self->identify_verify_probe = FALSE;
+      self->identify_type2_retry = FALSE;
+
       if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY)
         fpi_device_verify_report (device, FPI_MATCH_FAIL, NULL, NULL);
       else
@@ -1572,13 +1796,190 @@ egismoc_identify_check_cb (FpDevice *device,
     }
   else
     {
+      if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+          self->identify_type2_retry)
+        {
+          fp_info ("Type2 verify fallback was rejected by the device; reporting no match");
+          self->identify_type2_retry = FALSE;
+          fpi_device_verify_report (device, FPI_MATCH_FAIL, NULL, NULL);
+          fpi_ssm_jump_to_state (self->task_ssm, IDENTIFY_COMPLETE_SENSOR_RESET);
+          return;
+        }
+      self->identify_type2_retry = FALSE;
+
+      if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+          self->identify_verify_probe)
+        {
+          fp_info ("Verify-arm signed identity check was rejected by the device; reporting no match");
+          self->identify_verify_probe = FALSE;
+          fpi_device_verify_report (device, FPI_MATCH_FAIL, NULL, NULL);
+          fpi_ssm_jump_to_state (self->task_ssm, IDENTIFY_COMPLETE_SENSOR_RESET);
+          return;
+        }
+
       fpi_ssm_mark_failed (self->task_ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Unrecognized response from device"));
       return;
     }
 
+  fpi_ssm_jump_to_state (self->task_ssm, IDENTIFY_COMPLETE_SENSOR_RESET);
+}
+
+static void
+egismoc_verify_restart_after_partial_read (FpDevice *device,
+                                           guchar   *buffer_in,
+                                           gsize     length_in)
+{
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+
+  self->identify_verify_probe = FALSE;
+  self->identify_type2_retry = FALSE;
+  self->verify_partial_retries++;
+
+  if (egismoc_validate_response_suffix (buffer_in,
+                                        length_in,
+                                        rsp_read_offcenter_suffix,
+                                        rsp_read_offcenter_suffix_len))
+    fp_info ("Verify sensor read was off-center; restarting scan (%u)",
+             self->verify_partial_retries);
+  else if (egismoc_validate_response_prefix (buffer_in,
+                                             length_in,
+                                             rsp_read_dirty_prefix,
+                                             rsp_read_dirty_prefix_len))
+    fp_info ("Verify sensor read had no usable image; restarting scan (%u)",
+             self->verify_partial_retries);
+  else
+    fp_info ("Verify sensor read failed partially; restarting scan (%u)",
+             self->verify_partial_retries);
+
+  fpi_device_report_finger_status (device, FP_FINGER_STATUS_NONE);
+  self->verify_skip_wait_after_restart = TRUE;
+  self->verify_retry_settle_ms = 650;
+
+  if (self->verify_partial_retries >= 24)
+    {
+      fp_info ("Verify partial-read retry limit reached; reporting no match");
+      fpi_device_verify_report (device,
+                                FPI_MATCH_FAIL,
+                                NULL,
+                                NULL);
+      fpi_ssm_jump_to_state (self->task_ssm, IDENTIFY_COMPLETE_SENSOR_RESET);
+      return;
+    }
+
+  fpi_ssm_jump_to_state_delayed (self->task_ssm,
+                                 IDENTIFY_SENSOR_RESET,
+                                 250);
+}
+
+static void
+egismoc_sensor_check_cb (FpDevice *device,
+                         guchar   *buffer_in,
+                         gsize     length_in,
+                         GError   *error)
+{
+  fp_dbg ("Sensor check callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  g_autofree gchar *response_hex = NULL;
+
+  if (error)
+    {
+      fpi_ssm_mark_failed (self->task_ssm, error);
+      return;
+    }
+
+  response_hex = OPENSSL_buf2hexstr (buffer_in, MIN (length_in, 96));
+  fp_info ("Sensor check raw response (%" G_GSIZE_FORMAT " bytes): %s",
+           length_in,
+           response_hex);
+
+  if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+      egismoc_response_is_partial_read_failure (buffer_in, length_in))
+    {
+      egismoc_verify_restart_after_partial_read (device, buffer_in, length_in);
+      return;
+    }
+
   fpi_ssm_next_state (self->task_ssm);
+}
+
+static void
+egismoc_verify_arm_sensor_check_cb (FpDevice *device,
+                                    guchar   *buffer_in,
+                                    gsize     length_in,
+                                    GError   *error)
+{
+  fp_dbg ("Verify-arm sensor check callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  g_autofree gchar *response_hex = NULL;
+
+  if (error)
+    {
+      self->identify_verify_probe = FALSE;
+      fpi_ssm_mark_failed (self->task_ssm, error);
+      return;
+    }
+
+  response_hex = OPENSSL_buf2hexstr (buffer_in, MIN (length_in, 96));
+  fp_info ("Verify-arm sensor check raw response (%" G_GSIZE_FORMAT " bytes): %s",
+           length_in,
+           response_hex);
+
+  if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+      egismoc_response_is_partial_read_failure (buffer_in, length_in))
+    {
+      egismoc_verify_restart_after_partial_read (device, buffer_in, length_in);
+      return;
+    }
+
+  /*
+   * The following dynamic identify payload is the only step that can return
+   * and verify an SDCP AuthorizedIdentity. Keep identify_verify_probe set so
+   * a final no-match does not recurse into this retry path.
+   */
+  fpi_ssm_jump_to_state (self->task_ssm, IDENTIFY_CHECK);
+}
+
+static void
+egismoc_verify_probe_cb (FpDevice *device,
+                         guchar   *buffer_in,
+                         gsize     length_in,
+                         GError   *error)
+{
+  fp_dbg ("Legacy verify/read callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  g_autofree gchar *response_hex = NULL;
+
+  if (error)
+    {
+      fpi_ssm_mark_failed (self->task_ssm, error);
+      return;
+    }
+
+  response_hex = OPENSSL_buf2hexstr (buffer_in, MIN (length_in, 128));
+  fp_info ("Verify-arm read raw response (%" G_GSIZE_FORMAT " bytes): %s",
+           length_in, response_hex);
+
+  if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+      egismoc_response_is_partial_read_failure (buffer_in, length_in))
+    {
+      egismoc_verify_restart_after_partial_read (device, buffer_in, length_in);
+      return;
+    }
+
+  if (egismoc_validate_response_suffix (buffer_in,
+                                        length_in,
+                                        rsp_identify_match_suffix,
+                                        rsp_identify_match_suffix_len))
+    fp_info ("Verify-arm read response ended with success suffix");
+  else
+    fp_info ("Verify-arm read response did not end with success suffix; continuing to signed identity check");
+
+  egismoc_exec_cmd (device,
+                    cmd_sensor_check,
+                    cmd_sensor_check_len,
+                    NULL, egismoc_verify_arm_sensor_check_cb);
 }
 
 static void
@@ -1632,18 +2033,55 @@ egismoc_identify_run_state (FpiSsm   *ssm,
       break;
 
     case IDENTIFY_WAIT_FINGER:
+      if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY &&
+          self->verify_skip_wait_after_restart)
+        {
+          guint retry_settle_ms = self->verify_retry_settle_ms ? self->verify_retry_settle_ms : 350;
+
+          self->verify_skip_wait_after_restart = FALSE;
+          self->verify_retry_settle_ms = 0;
+          fp_info ("Pacing verify retry; checking sensor after %u ms", retry_settle_ms);
+          fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
+          fpi_ssm_next_state_delayed (ssm, retry_settle_ms);
+          break;
+        }
+
       egismoc_wait_finger_on_sensor (device);
       break;
 
     case IDENTIFY_SENSOR_CHECK:
       egismoc_exec_cmd (device, cmd_sensor_check, cmd_sensor_check_len,
-                        NULL, egismoc_task_ssm_next_state_cb);
+                        NULL, egismoc_sensor_check_cb);
       break;
 
     case IDENTIFY_CHECK:
       payload = egismoc_get_check_cmd (device, &payload_length);
       egismoc_exec_cmd (device, g_steal_pointer (&payload), payload_length,
                         g_free, egismoc_identify_check_cb);
+      break;
+
+    case IDENTIFY_VERIFY_SENSOR_RESET:
+      egismoc_exec_cmd (device, cmd_sensor_reset, cmd_sensor_reset_len,
+                        NULL, egismoc_task_ssm_next_state_cb);
+      break;
+
+    case IDENTIFY_VERIFY_SENSOR_IDENTIFY:
+      egismoc_exec_cmd (device, cmd_sensor_identify, cmd_sensor_identify_len,
+                        NULL, egismoc_task_ssm_next_state_cb);
+      break;
+
+    case IDENTIFY_VERIFY_SENSOR_VERIFY:
+      egismoc_exec_cmd (device, cmd_sensor_verify, cmd_sensor_verify_len,
+                        NULL, egismoc_task_ssm_next_state_cb);
+      break;
+
+    case IDENTIFY_VERIFY_WAIT_FINGER:
+      egismoc_wait_finger_on_sensor (device);
+      break;
+
+    case IDENTIFY_VERIFY_READ_VERIFY:
+      egismoc_exec_cmd (device, cmd_read_verify, cmd_read_verify_len,
+                        NULL, egismoc_verify_probe_cb);
       break;
 
     case IDENTIFY_COMPLETE_SENSOR_RESET:
@@ -1678,6 +2116,10 @@ egismoc_identify_verify (FpDevice *device)
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
 
   g_assert (self->task_ssm == NULL);
+  self->identify_type2_retry = FALSE;
+  self->identify_verify_probe = FALSE;
+  self->verify_partial_retries = 0;
+  self->verify_identify_nomatch_retries = 0;
   self->task_ssm = fpi_ssm_new (device, egismoc_identify_run_state, IDENTIFY_STATES);
   fpi_ssm_start (self->task_ssm, egismoc_task_ssm_done);
 }
@@ -1984,5 +2426,11 @@ fpi_device_egismoc_class_init (FpiDeviceEgisMocClass *klass)
 
   /* some but not all egismoc devices support reconnect; easiest to just disable for all */
   sdcp_dev_class->supports_reconnect = FALSE;
-  sdcp_dev_class->claim_expiration_seconds = 86400;
+  /*
+   * The 1c7a:0583 firmware stops accepting old cached claims after idle/sleep,
+   * but a verify attempt can legitimately spend tens of seconds recovering from
+   * blank arm interrupts and partial captures. Expire stale claims between
+   * attempts without invalidating the active SDCP session mid-verify.
+   */
+  sdcp_dev_class->claim_expiration_seconds = 300;
 }
