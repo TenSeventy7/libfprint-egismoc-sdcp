@@ -1134,7 +1134,19 @@ fpi_sdcp_device_is_connected (FpiSdcpDevice *device)
   if (!priv->is_connected)
     return FALSE;
 
-  return !sdcp_is_claim_expired (device);
+  if (sdcp_is_claim_expired (device))
+    {
+      /*
+       * A cached claim can outlive the device-side SDCP session on Egis MOC
+       * firmware. Force fresh host material for the next Connect instead of
+       * reusing stale random/key bytes from the expired claim.
+       */
+      fpi_sdcp_device_delete_cached_claim (device);
+      fpi_sdcp_set_host_keys (device, NULL, NULL);
+      return FALSE;
+    }
+
+  return TRUE;
 }
 
 /**
