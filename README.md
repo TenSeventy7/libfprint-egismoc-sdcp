@@ -53,6 +53,15 @@ being shipped in an open source project.
  - [MailingList] - low traffic, not much used these days
 
 <br/>
+## Debian 13 Package for Acer Swift Go 14 OLED
+**Maintainer:** Bikash Adhikari ([@bikashadhikari07](https://github.com/bikashadhikari07))
+
+This fork includes pre-compiled `.deb` packages specifically for Debian 13 (Trixie) users with the LighTuning 1c7a:0584 sensor.
+
+### Installation
+1. Download the `.deb` file from the [Releases](https://github.com/bikashadhikari07/libfprint-egismoc-sdcp/releases) page.
+2. Run: `sudo apt install ./libfprint-egismoc-1c7a_1.0-acer-swift-go_amd64.deb`
+3. Run: `fprintd-enroll`   
 
 <div align="right">
 
