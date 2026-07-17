@@ -236,6 +236,7 @@ deps = [
     gobject_dep,
     gusb_dep,
     mathlib_dep,
+    openssl_dep,
 ] + optional_deps
 
 # These are empty and only exist so that the include directories are created
