@@ -39,7 +39,7 @@
 
 struct _FpiDeviceEgisMoc
 {
-  FpDevice        parent;
+  FpiSdcpDevice        parent;
   FpiSsm         *task_ssm;
   FpiSsm         *cmd_ssm;
   FpiUsbTransfer *cmd_transfer;
