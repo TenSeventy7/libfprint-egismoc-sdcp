@@ -95,7 +95,7 @@ gio_dep = dependency('gio-unix-2.0', version: '>=' + glib_min_version)
 gobject_dep = dependency('gobject-2.0', version: '>=' + glib_min_version)
 gusb_dep = dependency('gusb', version: '>= 0.2.0')
 mathlib_dep = cc.find_library('m', required: false)
-openssl_dep = dependency('openssl', version: '>= 3.0.8') # 3.0.8 or higher as SDCP requires using uncompressed EC keys
+openssl_dep = dependency('openssl', version: '>= 3.0.0') # local patch: 3.0.x is enough, fpi-sdcp-device.c derives the uncompressed EC point itself
 
 # The following dependencies are only used for tests
 sh = find_program('sh', required: true)
@@ -211,6 +211,7 @@ driver_helper_mapping = {
     'aes3500' : [ 'aeslib', 'aes3k' ],
     'aes4000' : [ 'aeslib', 'aes3k' ],
     'uru4000' : [ 'openssl' ],
+    'egismoc' : [ 'openssl' ],
     'elanspi' : [ 'udev' ],
     'virtual_image'          : [ 'virtual' ],
     'virtual_device'         : [ 'virtual' ],
@@ -268,7 +269,7 @@ foreach i : driver_helpers
         libfprint_conf.set10('HAVE_PIXMAN', true)
         optional_deps += imaging_dep
     elif i == 'openssl'
-        openssl_dep = dependency('openssl', version: '>= 3.0.8', required: false)
+        openssl_dep = dependency('openssl', version: '>= 3.0.0', required: false)
         if not openssl_dep.found()
             error('OpenSSL is required for @0@ and possibly others'.format(driver))
         endif

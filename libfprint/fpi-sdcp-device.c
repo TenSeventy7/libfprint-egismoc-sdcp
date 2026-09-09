@@ -246,20 +246,31 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
       g_error ("Failed getting private key bytes");
       return FALSE;
     }
-  BN_clear_free (private_key_bn);
-
   /* if private_key_bytes were provided then ensure the new pk matches */
   if (private_key_bytes)
     g_assert_cmpmem (private_key_bytes, SDCP_PRIVATE_KEY_SIZE,
                      private_key, SDCP_PRIVATE_KEY_SIZE);
 
-  /* get public_key from the key */
-  if (!EVP_PKEY_get_octet_string_param (key, OSSL_PKEY_PARAM_PUB_KEY,
-      public_key, SDCP_PUBLIC_KEY_SIZE, &public_key_len))
-    {
-      g_error ("Failed getting public key");
-      return FALSE;
-    }
+  /* get public_key from the key.
+   * Local patch: derive the uncompressed point from the private scalar
+   * instead of EVP_PKEY_get_octet_string_param (), which returns the
+   * compressed form on OpenSSL < 3.0.8 (Ubuntu 22.04 ships 3.0.2). */
+  {
+    EC_GROUP *group = EC_GROUP_new_by_curve_name (SDCP_OPENSSL_CURVE_GROUP_NID);
+    EC_POINT *public_key_point = EC_POINT_new (group);
+
+    if (!EC_POINT_mul (group, public_key_point, private_key_bn, NULL, NULL, NULL))
+      {
+        g_error ("Failed deriving public key");
+        return FALSE;
+      }
+    public_key_len = EC_POINT_point2oct (group, public_key_point,
+                                         POINT_CONVERSION_UNCOMPRESSED,
+                                         public_key, SDCP_PUBLIC_KEY_SIZE, NULL);
+    EC_POINT_free (public_key_point);
+    EC_GROUP_free (group);
+  }
+  BN_clear_free (private_key_bn);
   g_assert (public_key_len == SDCP_PUBLIC_KEY_SIZE);
 
   /* set private member values */
