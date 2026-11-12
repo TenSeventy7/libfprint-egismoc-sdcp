@@ -132,6 +132,8 @@ gboolean fpi_sdcp_derive_keys_and_verify_connect_ex (FpiSdcpDevice *device,
 
 gboolean fpi_sdcp_device_is_connected (FpiSdcpDevice *device);
 
+void fpi_sdcp_device_reset_claim (FpiSdcpDevice *device);
+
 gboolean fpi_sdcp_device_can_reconnect (FpiSdcpDevice *device);
 
 gboolean fpi_sdcp_verify_reconnect (FpiSdcpDevice *device,

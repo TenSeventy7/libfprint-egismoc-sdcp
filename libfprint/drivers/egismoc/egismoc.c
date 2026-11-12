@@ -1532,6 +1532,9 @@ egismoc_identify_check_cb (FpDevice *device,
       if (!fpi_sdcp_verify_authorized_identity (sdcp_dev, host_nonce,
                                                 enrollment_id, device_mac))
         {
+          /* The device no longer shares our session; do a new Connect next time. */
+          fpi_sdcp_device_reset_claim (sdcp_dev);
+          g_clear_object (&print);
           fpi_ssm_mark_failed (self->task_ssm,
                                fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                          "Device SDCP Identify "
@@ -1913,6 +1916,16 @@ egismoc_open (FpDevice *device)
       fpi_device_open_complete (device, error);
       return;
     }
+
+  /*
+   * The device can drop its side of the SDCP session (idle, USB autosuspend,
+   * system suspend, a crashed daemon) while a cached claim still looks valid.
+   * After that every identify fails the MAC check. Always start from a new
+   * SDCP Connect (except in emulation, where the replayed captures depend on a
+   * pre-seeded claim).
+   */
+  if (g_strcmp0 (g_getenv ("FP_DEVICE_EMULATION"), "1") != 0)
+    fpi_sdcp_device_reset_claim (FPI_SDCP_DEVICE (device));
 
   /*
    * The device was closed, so no action can still use a leftover task SSM.
