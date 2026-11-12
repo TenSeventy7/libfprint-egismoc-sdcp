@@ -86,6 +86,10 @@ egismoc_validate_response_prefix (const guchar *buffer_in,
                                   const guchar *valid_prefix,
                                   const gsize   valid_prefix_len)
 {
+  /* never read past the end of a short response */
+  if (buffer_in_len < egismoc_read_prefix_len + EGISMOC_CHECK_BYTES_LENGTH + valid_prefix_len)
+    return FALSE;
+
   const gboolean result = memcmp (buffer_in +
                                   (egismoc_read_prefix_len +
                                    EGISMOC_CHECK_BYTES_LENGTH),
@@ -102,6 +106,10 @@ egismoc_validate_response_suffix (const guchar *buffer_in,
                                   const guchar *valid_suffix,
                                   const gsize   valid_suffix_len)
 {
+  /* never read before the start of a short response */
+  if (buffer_in_len < valid_suffix_len)
+    return FALSE;
+
   const gboolean result = memcmp (buffer_in + (buffer_in_len - valid_suffix_len),
                                   valid_suffix,
                                   valid_suffix_len) == 0;
@@ -389,7 +397,8 @@ egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
   }
 
   /* finger is "present" when buffer begins with "SIGE" and ends in valid suffix */
-  if (memcmp (transfer->buffer, egismoc_read_prefix, 4) == 0 &&
+  if (transfer->actual_length >= 4 &&
+      memcmp (transfer->buffer, egismoc_read_prefix, 4) == 0 &&
       egismoc_validate_response_suffix (transfer->buffer,
                                         transfer->actual_length,
                                         rsp_sensor_has_finger_suffix,
@@ -514,6 +523,7 @@ egismoc_sdcp_connect_cb (FpDevice *device,
   FpiSdcpDevice *sdcp = FPI_SDCP_DEVICE (device);
   g_autoptr(FpiSdcpConnectResponse) response = NULL;
   int pos = EGISMOC_CONNECT_RESPONSE_PREFIX_SIZE;
+  gsize cert_len;
 
   if (error)
     {
@@ -535,7 +545,9 @@ egismoc_sdcp_connect_cb (FpDevice *device,
     }
 
   /* buf len should be at least larger than all required parts (plus a cert) */
-  if (length_in <= SDCP_RANDOM_SIZE
+  if (length_in <= EGISMOC_CONNECT_RESPONSE_PREFIX_SIZE
+                   + SDCP_RANDOM_SIZE
+                   + 2
                    + SDCP_PUBLIC_KEY_SIZE
                    + SDCP_PUBLIC_KEY_SIZE
                    + SDCP_DIGEST_SIZE
@@ -547,6 +559,27 @@ egismoc_sdcp_connect_cb (FpDevice *device,
                           fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
                                                     "Device SDCP ConnectResponse "
                                                     "was not long enough"));
+      return;
+    }
+
+  /* the certificate length is device-provided; it must fit in the response */
+  cert_len = buffer_in[pos + SDCP_RANDOM_SIZE] << 8 | buffer_in[pos + SDCP_RANDOM_SIZE + 1];
+  if (cert_len == 0 ||
+      length_in < EGISMOC_CONNECT_RESPONSE_PREFIX_SIZE
+                  + SDCP_RANDOM_SIZE
+                  + 2
+                  + cert_len
+                  + SDCP_PUBLIC_KEY_SIZE
+                  + SDCP_PUBLIC_KEY_SIZE
+                  + SDCP_DIGEST_SIZE
+                  + SDCP_SIGNATURE_SIZE
+                  + SDCP_SIGNATURE_SIZE
+                  + SDCP_DIGEST_SIZE)
+    {
+      fpi_ssm_mark_failed (self->task_ssm,
+                          fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                                    "Device SDCP ConnectResponse "
+                                                    "has an invalid certificate length"));
       return;
     }
 
@@ -1146,6 +1179,15 @@ egismoc_enroll_starting_cb (FpDevice *device,
       return;
     }
 
+  if (length_in < EGISMOC_ENROLL_STARTING_RESPONSE_PREFIX_SIZE + SDCP_NONCE_SIZE +
+                  rsp_enroll_starting_suffix_len)
+    {
+      fpi_ssm_mark_failed (self->task_ssm,
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                     "Enrollment start response too short"));
+      return;
+    }
+
   /* clear and fetch SDCP device enrollment nonce from response */
   g_clear_pointer (&self->enrollment_nonce, g_free);
   self->enrollment_nonce = g_malloc0 (SDCP_NONCE_SIZE);
@@ -1498,6 +1540,15 @@ egismoc_identify_check_cb (FpDevice *device,
         but on egismoc devices there is a prefix, followed by (m,id) (yes, it
         is backwards), followed by a suffix.
        */
+      if (length_in < EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE + SDCP_DIGEST_SIZE +
+                      SDCP_ENROLLMENT_ID_SIZE + rsp_identify_match_suffix_len)
+        {
+          fpi_ssm_mark_failed (self->task_ssm,
+                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                         "Identify response too short"));
+          return;
+        }
+
       memcpy (device_mac,
               buffer_in + EGISMOC_IDENTIFY_RESPONSE_PREFIX_SIZE,
               SDCP_DIGEST_SIZE);
@@ -1734,6 +1785,15 @@ egismoc_fw_version_cb (FpDevice *device,
    * all but the last 2 bytes as the FW Version
    */
   prefix_length = egismoc_read_prefix_len + 2 + 3 + 1;
+
+  if (length_in < prefix_length + rsp_fw_version_suffix_len)
+    {
+      fpi_ssm_mark_failed (self->task_ssm,
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                     "Firmware version response too short"));
+      return;
+    }
+
   fw_version_start = buffer_in + prefix_length;
   fw_version_length = length_in - prefix_length - rsp_fw_version_suffix_len;
   fw_version = g_strndup ((gchar *) fw_version_start, fw_version_length);
