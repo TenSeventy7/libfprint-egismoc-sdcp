@@ -359,8 +359,18 @@ egismoc_wait_finger_ssm_done (FpiSsm   *ssm,
   self->wait_finger_ssm = NULL;
   self->wait_finger_start = 0;
 
+  /*
+   * Fail the parent task SSM instead of reporting the action error directly.
+   * Otherwise task_ssm is never completed and stays set, and the next action
+   * or the next open aborts the whole daemon on the task_ssm == NULL assertion.
+   */
   if (error)
-    fpi_device_action_error (device, error);
+    {
+      if (self->task_ssm)
+        fpi_ssm_mark_failed (self->task_ssm, error);
+      else
+        fpi_device_action_error (device, error);
+    }
 }
 
 static void
@@ -1904,7 +1914,16 @@ egismoc_open (FpDevice *device)
       return;
     }
 
-  g_assert (self->task_ssm == NULL);
+  /*
+   * The device was closed, so no action can still use a leftover task SSM.
+   * Drop it instead of aborting the whole daemon.
+   */
+  if (self->task_ssm)
+    {
+      fp_warn ("Discarding stale task state machine left over from a previous action");
+      self->task_ssm = NULL;
+    }
+
   self->task_ssm = fpi_ssm_new (device, egismoc_dev_init_handler, DEV_INIT_STATES);
   fpi_ssm_start (self->task_ssm, egismoc_dev_init_done);
 }
