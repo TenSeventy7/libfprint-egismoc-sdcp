@@ -238,10 +238,15 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
       g_error ("Failed getting private key");
       return FALSE;
     }
-  private_key_len = BN_num_bytes (private_key_bn);
-  g_assert (private_key_len == SDCP_PRIVATE_KEY_SIZE);
+  /*
+   * A random scalar has a leading zero byte about 1 time in 256, so
+   * BN_num_bytes() can be less than 32. Always serialize as fixed-width
+   * big-endian instead of aborting the daemon.
+   */
+  g_assert (BN_num_bytes (private_key_bn) <= SDCP_PRIVATE_KEY_SIZE);
+  private_key_len = SDCP_PRIVATE_KEY_SIZE;
   private_key = g_malloc0 (private_key_len);
-  if (!BN_bn2bin (private_key_bn, private_key))
+  if (BN_bn2binpad (private_key_bn, private_key, private_key_len) != private_key_len)
     {
       g_error ("Failed getting private key bytes");
       return FALSE;
@@ -528,7 +533,7 @@ fpi_sdcp_device_delete_cached_claim (FpiSdcpDevice *self)
 
   path = fpi_sdcp_device_get_cached_claim_path (self);
 
-  if (!g_file_test (path, G_FILE_TEST_EXISTS | G_FILE_TEST_IS_REGULAR))
+  if (!path || !g_file_test (path, G_FILE_TEST_EXISTS | G_FILE_TEST_IS_REGULAR))
     return;
 
   file = g_file_new_for_path (path);
@@ -1135,6 +1140,23 @@ fpi_sdcp_device_is_connected (FpiSdcpDevice *device)
     return FALSE;
 
   return !sdcp_is_claim_expired (device);
+}
+
+/**
+ * fpi_sdcp_device_reset_claim:
+ * @device: The #FpiSdcpDevice
+ *
+ * Discards any in-memory or cached connection claim and generates new host
+ * keys, so that the next fpi_sdcp_device_is_connected() returns %FALSE and the
+ * driver performs a full SDCP `Connect`. Use this when the device may have
+ * dropped its side of the session (for example after idle, suspend or a crash),
+ * because a stale claim makes every AuthorizedIdentity check fail.
+ */
+void
+fpi_sdcp_device_reset_claim (FpiSdcpDevice *device)
+{
+  fpi_sdcp_device_delete_cached_claim (device);
+  fpi_sdcp_set_host_keys (device, NULL, NULL);
 }
 
 /**
