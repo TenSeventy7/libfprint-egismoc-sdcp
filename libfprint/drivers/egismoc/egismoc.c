@@ -364,19 +364,71 @@ egismoc_wait_finger_ssm_done (FpiSsm   *ssm,
 }
 
 static void
+egismoc_wait_finger_cool_cmd_cb (FpDevice *device,
+                                 guchar   *buffer_in,
+                                 gsize     length_in,
+                                 GError   *error)
+{
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+
+  if (!self->wait_finger_ssm)
+    {
+      g_clear_error (&error);
+      return;
+    }
+
+  if (error)
+    fpi_ssm_mark_failed (self->wait_finger_ssm, error);
+  else
+    fpi_ssm_next_state (self->wait_finger_ssm);
+}
+
+static void
+egismoc_wait_finger_cool_rearm_cb (FpDevice *device,
+                                   guchar   *buffer_in,
+                                   gsize     length_in,
+                                   GError   *error)
+{
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+
+  if (!self->wait_finger_ssm)
+    {
+      g_clear_error (&error);
+      return;
+    }
+
+  if (error)
+    fpi_ssm_mark_failed (self->wait_finger_ssm, error);
+  else
+    fpi_ssm_jump_to_state (self->wait_finger_ssm, WAIT_FINGER_NOT_ON_SENSOR);
+}
+
+static void
 egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
                              FpDevice       *device,
                              gpointer        userdata,
                              GError         *error)
 {
   fp_dbg ("Finger on sensor callback");
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
 
   g_return_if_fail (transfer->ssm);
 
-  if (error) {
-    fpi_ssm_mark_failed (transfer->ssm, error);
-    return;
-  }
+  if (error)
+    {
+      if (g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT) &&
+          self->task_ssm &&
+          fpi_ssm_get_cur_state (self->task_ssm) == IDENTIFY_WAIT_FINGER &&
+          !g_cancellable_is_cancelled (self->interrupt_cancellable))
+        {
+          g_error_free (error);
+          fpi_ssm_jump_to_state (transfer->ssm, WAIT_FINGER_COOL_RESET);
+          return;
+        }
+
+      fpi_ssm_mark_failed (transfer->ssm, error);
+      return;
+    }
 
   /* finger is "present" when buffer begins with "SIGE" and ends in valid suffix */
   if (memcmp (transfer->buffer, egismoc_read_prefix, 4) == 0 &&
@@ -386,7 +438,7 @@ egismoc_finger_on_sensor_cb (FpiUsbTransfer *transfer,
                                         rsp_sensor_has_finger_suffix_len))
     {
       fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
-      fpi_ssm_next_state (transfer->ssm);
+      fpi_ssm_jump_to_state (transfer->ssm, WAIT_FINGER_ON_SENSOR);
     }
   else
     {
@@ -400,11 +452,14 @@ egismoc_wait_finger_run_state (FpiSsm   *ssm,
 {
   FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
   g_autoptr(FpiUsbTransfer) transfer = NULL;
+  gboolean is_identify_wait = self->task_ssm &&
+                              fpi_ssm_get_cur_state (self->task_ssm) == IDENTIFY_WAIT_FINGER;
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
     case WAIT_FINGER_NOT_ON_SENSOR:
-      if (self->wait_finger_start + EGISMOC_FINGER_ON_SENSOR_TIMEOUT_USEC > g_get_monotonic_time ())
+      if (is_identify_wait ||
+          self->wait_finger_start + EGISMOC_FINGER_ON_SENSOR_TIMEOUT_USEC > g_get_monotonic_time ())
         {
           transfer = fpi_usb_transfer_new (device);
           fpi_usb_transfer_fill_interrupt (transfer, EGISMOC_EP_CMD_INTERRUPT_IN,
@@ -415,10 +470,11 @@ egismoc_wait_finger_run_state (FpiSsm   *ssm,
           transfer->short_is_error = FALSE;
 
           fpi_usb_transfer_submit (g_steal_pointer (&transfer),
-                                  EGISMOC_USB_INTERRUPT_TIMEOUT,
-                                  self->interrupt_cancellable,
-                                  egismoc_finger_on_sensor_cb,
-                                  NULL);
+                                   is_identify_wait ? EGISMOC_IDENTIFY_REFRESH_TIMEOUT
+                                                    : EGISMOC_USB_INTERRUPT_TIMEOUT,
+                                   self->interrupt_cancellable,
+                                   egismoc_finger_on_sensor_cb,
+                                   NULL);
         }
       else
         {
@@ -426,6 +482,21 @@ egismoc_wait_finger_run_state (FpiSsm   *ssm,
                                                               "Timed out trying to detect "
                                                               "finger on sensor"));
         }
+      break;
+
+    case WAIT_FINGER_COOL_RESET:
+      egismoc_exec_cmd (device, cmd_sensor_reset, cmd_sensor_reset_len,
+                        NULL, egismoc_wait_finger_cool_cmd_cb);
+      break;
+
+    case WAIT_FINGER_COOL_SLEEP:
+      fpi_ssm_next_state_delayed (ssm, EGISMOC_IDENTIFY_COOLDOWN_DELAY_MS);
+      break;
+
+    case WAIT_FINGER_COOL_REARM:
+      self->wait_finger_start = g_get_monotonic_time ();
+      egismoc_exec_cmd (device, cmd_sensor_identify, cmd_sensor_identify_len,
+                        NULL, egismoc_wait_finger_cool_rearm_cb);
       break;
 
     case WAIT_FINGER_ON_SENSOR:
