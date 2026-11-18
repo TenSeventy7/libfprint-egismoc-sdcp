@@ -238,10 +238,15 @@ fpi_sdcp_set_host_keys (FpiSdcpDevice *device,
       g_error ("Failed getting private key");
       return FALSE;
     }
-  private_key_len = BN_num_bytes (private_key_bn);
-  g_assert (private_key_len == SDCP_PRIVATE_KEY_SIZE);
+  /*
+   * A random P-256 private scalar has a leading zero byte ~1 time in 256, so
+   * BN_num_bytes() can be less than SDCP_PRIVATE_KEY_SIZE (32). Serialize with
+   * BN_bn2binpad() to a fixed 32-byte big-endian buffer instead of asserting.
+   */
+  g_assert (BN_num_bytes (private_key_bn) <= SDCP_PRIVATE_KEY_SIZE);
+  private_key_len = SDCP_PRIVATE_KEY_SIZE;
   private_key = g_malloc0 (private_key_len);
-  if (!BN_bn2bin (private_key_bn, private_key))
+  if (BN_bn2binpad (private_key_bn, private_key, private_key_len) != private_key_len)
     {
       g_error ("Failed getting private key bytes");
       return FALSE;
