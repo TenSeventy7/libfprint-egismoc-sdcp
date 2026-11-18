@@ -1940,6 +1940,14 @@ egismoc_close (FpDevice *device)
   egismoc_cancel (device);
   g_clear_object (&self->interrupt_cancellable);
 
+  /*
+   * Reset the USB device on close so that if an identify/verify or enroll
+   * action was cancelled while waiting for a finger (after cmd_sensor_identify
+   * or cmd_sensor_enroll armed the capacitive pad), the sensor MCU powers down
+   * immediately instead of staying energized and overheating while idle.
+   */
+  g_usb_device_reset (fpi_device_get_usb_device (device), NULL);
+
   g_usb_device_release_interface (fpi_device_get_usb_device (device),
                                   0, 0, &error);
   fpi_device_close_complete (device, error);
