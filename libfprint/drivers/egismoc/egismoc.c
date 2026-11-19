@@ -1964,8 +1964,11 @@ fpi_device_egismoc_class_init (FpiDeviceEgisMocClass *klass)
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
   dev_class->id_table = egismoc_id_table;
   dev_class->nr_enroll_stages = EGISMOC_MAX_ENROLL_STAGES_DEFAULT;
-  /* device should be "always off" unless being used */
-  dev_class->temp_hot_seconds = 0;
+  /* Match-on-Chip sensor: disable libfprint's software thermal timer (-1)
+   * just like elanmoc, goodixmoc, focaltech_moc, fpcmoc, realtek, and synaptics.
+   * Setting 0 actually selects DEFAULT_TEMP_HOT_SECONDS (180s) in fp-device.c,
+   * causing false "Device disabled to prevent overheating." errors on lockscreens. */
+  dev_class->temp_hot_seconds = -1;
 
   dev_class->probe = egismoc_probe;
   dev_class->open = egismoc_open;
