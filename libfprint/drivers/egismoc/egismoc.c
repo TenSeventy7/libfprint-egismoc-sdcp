@@ -61,6 +61,7 @@ static const FpIdEntry egismoc_id_table[] = {
   { .vid = 0x1c7a, .pid = 0x0587, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x05a1, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 },
   { .vid = 0x1c7a, .pid = 0x05a5, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_15 },
+  { .vid = 0x1c7a, .pid = 0x05aa, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 | EGISMOC_DRIVER_IGNORE_INIT_CONTROL_ERRORS | EGISMOC_DRIVER_MAX_ENROLL_STAGES_14 },
   { .vid = 0,      .pid = 0,      .driver_data = 0 }
 };
 
@@ -1748,6 +1749,23 @@ egismoc_dev_init_done (FpiSsm   *ssm,
 }
 
 static void
+egismoc_init_control_cb (FpiUsbTransfer *transfer,
+                         FpDevice       *device,
+                         gpointer        user_data,
+                         GError         *error)
+{
+  if (error &&
+      (fpi_device_get_driver_data (device) & EGISMOC_DRIVER_IGNORE_INIT_CONTROL_ERRORS))
+    {
+      fp_dbg ("Ignoring failed init control transfer (state %d): %s",
+              fpi_ssm_get_cur_state (transfer->ssm), error->message);
+      g_clear_error (&error);
+    }
+
+  fpi_ssm_usb_transfer_cb (transfer, device, user_data, error);
+}
+
+static void
 egismoc_dev_init_handler (FpiSsm   *ssm,
                           FpDevice *device)
 {
@@ -1809,7 +1827,7 @@ egismoc_dev_init_handler (FpiSsm   *ssm,
   fpi_usb_transfer_submit (g_steal_pointer (&transfer),
                            EGISMOC_USB_CONTROL_TIMEOUT,
                            fpi_device_get_cancellable (device),
-                           fpi_ssm_usb_transfer_cb,
+                           egismoc_init_control_cb,
                            NULL);
 }
 
@@ -1871,6 +1889,8 @@ egismoc_probe (FpDevice *device)
      self->max_enroll_stages = 20;
   else if (driver_data & EGISMOC_DRIVER_MAX_ENROLL_STAGES_15)
     self->max_enroll_stages = 15;
+  else if (driver_data & EGISMOC_DRIVER_MAX_ENROLL_STAGES_14)
+    self->max_enroll_stages = 14;
   else
     self->max_enroll_stages = EGISMOC_MAX_ENROLL_STAGES_DEFAULT;
 
